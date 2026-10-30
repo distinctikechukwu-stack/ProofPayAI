@@ -5,13 +5,17 @@ alter table public.marketplace_jobs
   add column moderation_hold_at timestamptz;
 
 alter table public.marketplace_job_reports
-  add column status text not null default 'pending' check (status in ('pending','reviewed')),
   add column decision text check (decision is null or decision in ('hide_listing','restore_listing','no_action','escalate')),
   add column reviewed_by uuid references public.profiles(id) on delete restrict,
   add column reviewed_at timestamptz,
   add column resolution_note text not null default '' check (char_length(resolution_note)<=2000),
-  add constraint marketplace_job_report_review_shape check ((status='pending' and reviewed_by is null and reviewed_at is null and decision is null)
-    or (status='reviewed' and reviewed_by is not null and reviewed_at is not null and decision is not null));
+  add constraint marketplace_job_report_review_shape check (
+    (status='pending' and reviewed_by is null and reviewed_at is null and decision is null)
+    or (status in ('reviewed','dismissed','actioned') and (
+      (reviewed_by is null and reviewed_at is null and decision is null)
+      or (reviewed_by is not null and reviewed_at is not null and decision is not null)
+    ))
+  );
 
 alter table public.conversation_abuse_reports
   add column status text not null default 'pending' check (status in ('pending','reviewed')),

@@ -22,10 +22,10 @@
     { "key": "idempotencyKey", "value": "" },
     { "key": "invoiceId", "value": "" },
     { "key": "conversationId", "value": "" },
-    { "key": "notificationId", "value": "" }
-    ,{ "key": "jobReportId", "value": "" }
-    ,{ "key": "conversationReportId", "value": "" }
-    ,{ "key": "deletionRequestId", "value": "" }
+    { "key": "notificationId", "value": "" },
+    { "key": "jobReportId", "value": "" },
+    { "key": "conversationReportId", "value": "" },
+    { "key": "deletionRequestId", "value": "" }
   ],
   "item": [
     {

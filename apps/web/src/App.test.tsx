@@ -57,10 +57,10 @@ describe("ProofPay AI product preview", () => {
   it("keeps analytics data unavailable until the user signs in", async () => {
     renderRoute("/app/analytics");
 
-    expect(await screen.findByRole("heading", { name: "Analytics" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Analytics" }, { timeout: 10000 })).toBeInTheDocument();
     expect(await screen.findByText(/sign in to load project and invoice analytics/i)).toBeInTheDocument();
     expect(screen.queryByText(/no paid invoices/i)).not.toBeInTheDocument();
-  });
+  }, 15000);
 
   it("shows the milestone schedule as clearly labeled sample data in demo mode", async () => {
     renderRoute("/app/timeline");

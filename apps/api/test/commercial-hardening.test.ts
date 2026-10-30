@@ -67,6 +67,21 @@ describe("commercial hardening API", () => {
     expect(JSON.stringify(supabase.rpc.mock.calls[0]?.[1])).not.toContain("account-from-session");
   });
 
+  it("cancels only through the actor-bound database action and rejects status overrides", async () => {
+    const supabase = authenticatedFactory({ rpcData: { requestId: reportId, status: "cancelled" } });
+    app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
+    const invalid = await app.inject({
+      method: "POST", url: "/api/account/deletion/cancel", headers: { authorization: "Bearer valid-token" },
+      payload: { userId: "another-account", status: "cancelled" },
+    });
+    expect(invalid.statusCode).toBe(422);
+    expect(supabase.rpc).not.toHaveBeenCalled();
+
+    const response = await app.inject({ method: "POST", url: "/api/account/deletion/cancel", headers: { authorization: "Bearer valid-token" } });
+    expect(response.statusCode).toBe(200);
+    expect(supabase.rpc).toHaveBeenCalledWith("cancel_account_deletion_request");
+  });
+
   it("scopes deletion status lookup to the authenticated user and validates its projection", async () => {
     const supabase = authenticatedFactory({ rows: { account_deletion_requests: [{
       id: reportId, status: "under_review", created_at: "2026-10-30T10:00:00Z", updated_at: "2026-10-30T11:00:00Z",
@@ -87,6 +102,29 @@ describe("commercial hardening API", () => {
     expect(response.json()).toEqual({ error: "You do not have access to perform this action." });
     expect(supabase.rpc).toHaveBeenCalledWith("moderation_queue_for_admin");
     expect(response.body).not.toContain("private database detail");
+  });
+
+  it("validates and returns the private moderation queue projection", async () => {
+    const supabase = authenticatedFactory({ rpcData: {
+      jobReports: [{ id: reportId, jobTitle: "Landing page", reason: "suspicious", details: "Repeated links.", status: "actioned", decision: null, resolutionNote: "", createdAt: "2026-10-30T10:00:00Z", reviewedAt: null, moderationHold: false }],
+      conversationReports: [], deletionRequests: [],
+    } });
+    app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
+    const response = await app.inject({ method: "GET", url: "/api/admin/moderation", headers: { authorization: "Bearer valid-token" } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().jobReports[0]).toMatchObject({ id: reportId, status: "actioned" });
+    expect(response.body).not.toContain("reporterId");
+  });
+
+  it("rejects malformed moderation queue rows without forwarding private identifiers", async () => {
+    const supabase = authenticatedFactory({ rpcData: {
+      jobReports: [{ id: reportId, jobTitle: "Landing page", reason: "suspicious", details: "", status: "pending", decision: null, resolutionNote: "", createdAt: "2026-10-30T10:00:00Z", reviewedAt: null, moderationHold: false, reporterId: "private-user-id" }],
+      conversationReports: [], deletionRequests: [],
+    } });
+    app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
+    const response = await app.inject({ method: "GET", url: "/api/admin/moderation", headers: { authorization: "Bearer valid-token" } });
+    expect(response.statusCode).toBe(502);
+    expect(response.body).not.toContain("private-user-id");
   });
 
   it("validates admin review input and forwards only the report key and approved decision", async () => {

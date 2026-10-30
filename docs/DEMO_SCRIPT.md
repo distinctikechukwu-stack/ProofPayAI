@@ -25,7 +25,7 @@ Open **Invoices**. Show the notice that no invoice, provider link, or payment re
 
 ## 2:00–2:20 — Close with what is next
 
-“The next validation step is to apply the migrations to a test Supabase project, configure provider credentials, and run the full Sandbox webhook lifecycle. Job, proposal, messaging, and hourly-work code paths are implemented with fake-backed tests, but their database behavior is not verified here. Account lifecycle, moderation, and deployment hardening remain in progress.”
+“The next validation step is to apply the migrations to a test Supabase project, configure provider credentials, and run the full Sandbox webhook lifecycle. Job, proposal, messaging, hourly-work, moderation, and account-request code paths have local fake-backed tests, but their database behavior is not verified here. Account retention/deletion policy, deployed monitoring, and hosting remain in progress.”
 
 ## Optional configured-environment substitution
 

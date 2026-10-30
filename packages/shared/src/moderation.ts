@@ -26,7 +26,7 @@ export const accountDeletionStatusSchema = z.object({
   resolution_note: z.string().max(2_000),
 }).strict();
 
-const moderationStatusSchema = z.enum(["pending", "reviewed"]);
+const moderationStatusSchema = z.enum(["pending", "reviewed", "dismissed", "actioned"]);
 const decisionSchema = z.enum(["hide_listing", "restore_listing", "no_action", "escalate"]).nullable();
 
 export const moderationQueueSchema = z.object({

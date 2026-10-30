@@ -55,7 +55,7 @@ export function ModerationPage() {
 
       <section className="surface-card moderation-section"><SectionHeading title="Job listing reports" subtitle="Hide or restore a listing, record no action, or escalate for further review." />
         {queue.jobReports.length ? <div className="moderation-list">{queue.jobReports.map((report) => <article className="moderation-report-card" key={report.id}>
-          <div className="moderation-card-heading"><span className="moderation-icon"><Flag size={16} /></span><div><strong>{report.jobTitle}</strong><small>{report.reason.replaceAll("_", " ")} · {formatDate(report.createdAt)}</small></div><StatusPill status={report.status === "pending" ? "Pending review" : report.decision?.replaceAll("_", " ") ?? "Reviewed"} /></div>
+          <div className="moderation-card-heading"><span className="moderation-icon"><Flag size={16} /></span><div><strong>{report.jobTitle}</strong><small>{report.reason.replaceAll("_", " ")} · {formatDate(report.createdAt)}</small></div><StatusPill status={report.status === "pending" ? "Pending review" : report.decision?.replaceAll("_", " ") ?? report.status.replaceAll("_", " ")} /></div>
           {report.details && <p>{report.details}</p>}
           {report.status === "reviewed" && report.resolutionNote && <p className="moderation-resolution"><strong>Moderator note:</strong> {report.resolutionNote}</p>}
           {report.status === "pending" && <div className="moderation-actions"><label>Decision note<textarea maxLength={2000} value={notes[report.id] ?? ""} onChange={(event) => setNotes((current) => ({ ...current, [report.id]: event.currentTarget.value }))} /></label><div>{report.moderationHold

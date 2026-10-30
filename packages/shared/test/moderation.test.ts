@@ -28,6 +28,7 @@ describe("moderation and account request schemas", () => {
       conversationReports: [], deletionRequests: [],
     };
     expect(moderationQueueSchema.safeParse(queue).success).toBe(true);
+    expect(moderationQueueSchema.safeParse({ ...queue, jobReports: [{ ...queue.jobReports[0], status: "actioned" }] }).success).toBe(true);
     expect(moderationQueueSchema.safeParse({ ...queue, jobReports: [{ ...queue.jobReports[0], reporterId: id }] }).success).toBe(false);
     expect(moderationQueueSchema.safeParse({ ...queue, deletionRequests: [{ id, displayName: "A user", status: "requested", createdAt: "invalid", reviewedAt: null, resolutionNote: "" }] }).success).toBe(false);
   });

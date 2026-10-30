@@ -1,0 +1,324 @@
+.marketplace-toolbar,.marketplace-catalog-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:9px; margin:16px 0; padding:12px; border:1px solid #e7ebf0; border-radius:11px; background:#fff; }
+.marketplace-toolbar>select,.marketplace-toolbar>input,.marketplace-catalog-toolbar>select { min-height:35px; max-width:180px; padding:7px 10px; border:1px solid #e1e6ed; border-radius:7px; color:#52647c; background:#fff; font:inherit; font-size:9px; }
+.marketplace-search { display:flex; align-items:center; flex:1 1 240px; gap:8px; min-height:35px; padding:0 10px; border:1px solid #e1e6ed; border-radius:7px; color:#8290a1; }
+.marketplace-search input { width:100%; min-width:0; border:0; outline:0; color:#31445d; background:transparent; font:inherit; font-size:10px; }
+.marketplace-budget-filter { display:flex; align-items:center; gap:5px; color:#7b899b; font-size:8px; }
+.marketplace-budget-filter input { width:68px; min-height:33px; padding:6px; border:1px solid #e1e6ed; border-radius:6px; color:#41536a; font:inherit; font-size:9px; }
+.marketplace-budget-filter input:last-child { width:46px; text-transform:uppercase; }
+.marketplace-job-list { display:grid; gap:11px; }
+.marketplace-job-card,.marketplace-detail-card,.marketplace-proposal-box,.marketplace-offers-panel,.marketplace-service-owner { border:1px solid #e8ecf1; border-radius:12px; background:#fff; box-shadow:0 8px 28px rgba(30,49,76,.035); }
+.marketplace-job-card { padding:19px 20px 15px; }
+.marketplace-job-top,.marketplace-detail-top { display:flex; align-items:flex-start; justify-content:space-between; gap:22px; }
+.marketplace-category { display:block; color:#6c87a8; font-size:8px; font-weight:750; letter-spacing:.08em; text-transform:uppercase; }
+.marketplace-job-top h2 { margin:6px 0 5px; color:#2d4058; font-size:15px; letter-spacing:-.3px; }
+.marketplace-job-top h2 a { display:inline-flex; align-items:center; gap:5px; color:inherit; }
+.marketplace-job-top p,.marketplace-detail-top p { max-width:700px; margin:0; color:#78879a; font-size:10px; line-height:1.65; }
+.marketplace-budget { flex:0 0 auto; color:#27486f; font-size:11px; font-weight:750; text-align:right; }
+.marketplace-job-tags { display:flex; flex-wrap:wrap; gap:6px; margin-top:14px; }
+.marketplace-job-tags span { padding:5px 8px; border:1px solid #e8edf3; border-radius:999px; color:#687a91; background:#fafbfd; font-size:8px; }
+.marketplace-job-bottom { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:15px; padding-top:12px; border-top:1px solid #eef1f4; color:#8491a2; font-size:8px; }
+.marketplace-job-bottom>div,.marketplace-job-bottom a,.marketplace-open-link { display:inline-flex; align-items:center; gap:8px; }
+.marketplace-open-link,.marketplace-back { color:#456fa9; font-size:9px; font-weight:700; }
+.marketplace-icon-action,.marketplace-outline-action { display:inline-flex; align-items:center; justify-content:center; gap:5px; min-width:31px; min-height:30px; border:1px solid #e2e8f0; border-radius:7px; color:#68819f; background:#fff; cursor:pointer; }
+.marketplace-icon-action.saved,.marketplace-outline-action.selected { color:#3d6eae; background:#f1f6fc; }
+.marketplace-detail-card { margin-top:14px; padding:clamp(18px,3vw,28px); }
+.marketplace-detail-top h1 { margin:7px 0; color:#2c4059; font-size:clamp(23px,3vw,31px); letter-spacing:-.8px; }
+.marketplace-detail-meta,.marketplace-owner-actions { display:flex; align-items:center; flex-wrap:wrap; gap:11px; margin:17px 0; color:#77869a; font-size:9px; }
+.marketplace-owner-actions { padding:12px 0; border-block:1px solid #edf0f4; }
+.marketplace-detail-section { padding:16px 0; border-top:1px solid #edf0f4; color:#5b6d84; font-size:10px; line-height:1.7; }
+.marketplace-detail-section h2,.marketplace-section-heading h2 { margin:0 0 7px; color:#30445e; font-size:13px; }
+.marketplace-detail-section p { margin:0; white-space:pre-wrap; }
+.marketplace-detail-section ul { display:grid; gap:6px; margin:9px 0 0; padding-left:18px; }
+.marketplace-proposal-box,.marketplace-offers-panel,.marketplace-service-owner { margin-top:15px; padding:19px; }
+.marketplace-section-heading { display:flex; align-items:center; justify-content:space-between; gap:14px; margin-bottom:12px; color:#75849a; font-size:9px; }
+.marketplace-section-heading p { margin:6px 0 0; color:#8592a3; font-size:9px; line-height:1.6; }
+.marketplace-form { display:grid; gap:13px; }
+.marketplace-form label { display:grid; gap:6px; color:#53657d; font-size:9px; font-weight:650; }
+.marketplace-form input:not([type=checkbox]),.marketplace-form textarea,.marketplace-form select,.marketplace-report-form textarea,.marketplace-report-form select { width:100%; min-height:36px; padding:9px 10px; border:1px solid #e0e6ed; border-radius:7px; color:#31445c; background:#fff; font:inherit; font-size:10px; outline:0; }
+.marketplace-form textarea { min-height:74px; resize:vertical; line-height:1.6; }
+.marketplace-form input:focus,.marketplace-form textarea:focus,.marketplace-form select:focus { border-color:#83a9ed; box-shadow:0 0 0 3px rgba(39,101,220,.1); }
+.marketplace-form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.marketplace-form-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:9px; }
+.marketplace-form-actions .button-primary,.marketplace-form-actions .button-secondary,.marketplace-offer-composer .button-primary { min-height:33px; gap:6px; }
+.marketplace-reference-list,.marketplace-package-fieldset { display:grid; gap:9px; padding:13px; border:1px solid #e7ebf1; border-radius:9px; }
+.marketplace-reference-list legend,.marketplace-package-fieldset legend { padding:0 5px; color:#728198; font-size:9px; font-weight:700; }
+.marketplace-reference-list label { display:flex; align-items:center; gap:7px; font-size:9px; }
+.marketplace-reference-list input { accent-color:#3f6fbe; }
+.marketplace-inline-note,.marketplace-empty-inline { color:#8290a1; font-size:9px; line-height:1.6; }
+.marketplace-inline-error,.marketplace-alert { display:flex; align-items:center; gap:8px; padding:11px 13px; border:1px solid #efd7d5; border-radius:8px; color:#9d4b44; background:#fff8f7; font-size:9px; }
+.marketplace-notice { display:flex; align-items:center; gap:8px; padding:11px 13px; border:1px solid #d7e8dc; border-radius:8px; color:#387353; background:#f5fbf7; font-size:9px; }
+.marketplace-applicant-list,.marketplace-service-requests,.marketplace-own-services { display:grid; gap:10px; }
+.marketplace-applicant-card,.marketplace-own-service,.marketplace-request-row { padding:14px; border:1px solid #e9edf2; border-radius:9px; background:#fcfdfe; }
+.marketplace-applicant-top { display:flex; align-items:center; gap:10px; }
+.marketplace-avatar-small { display:grid; width:31px; height:31px; place-items:center; border-radius:50%; color:#5578a5; background:#eaf0f7; font-size:10px; font-weight:750; }
+.marketplace-applicant-top>div { display:grid; gap:3px; flex:1; color:#42556d; font-size:9px; }
+.marketplace-applicant-top small { color:#8692a2; font-size:8px; }
+.marketplace-applicant-card>p,.marketplace-request-row p,.marketplace-offer-row p { margin:12px 0; color:#617289; font-size:10px; line-height:1.7; white-space:pre-wrap; }
+.marketplace-text-action { border:0; color:#8d5b55; background:transparent; font:inherit; font-size:9px; cursor:pointer; }
+.marketplace-offer-composer { display:grid; gap:10px; margin-top:13px; padding:13px; border:1px solid #e8edf2; border-radius:8px; background:#fff; }
+.marketplace-offer-composer>strong { color:#455a74; font-size:10px; }
+.marketplace-offer-row { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; padding:13px 0; border-top:1px solid #edf0f4; }
+.marketplace-offer-row>div:first-child { display:grid; gap:5px; color:#4d6079; font-size:9px; }
+.marketplace-offer-row>div:first-child span,.marketplace-offer-row p { color:#7d8b9d; }
+.marketplace-offer-row p { margin:3px 0; }
+.marketplace-offer-row a { display:inline-flex; align-items:center; gap:4px; color:#426eaa; }
+.marketplace-report-form { display:grid; gap:10px; max-width:560px; margin-top:13px; padding:14px; border:1px solid #ebeef2; border-radius:9px; }
+.marketplace-report-form label { display:grid; gap:5px; color:#61728a; font-size:9px; }
+.marketplace-empty { display:grid; justify-items:start; gap:9px; margin:14px 0; padding:24px; border:1px solid #e7ebf0; border-radius:11px; color:#74849a; background:#fff; }
+.marketplace-empty h2 { margin:0; color:#30445e; font-size:15px; }
+.marketplace-empty p { margin:0; color:#7d8b9c; font-size:10px; line-height:1.65; }
+.marketplace-role-note { display:flex; gap:10px; align-items:center; margin-top:12px; padding:11px 14px; border:1px solid #e7ebf0; border-radius:8px; color:#7c899a; background:#fff; font-size:9px; }
+.marketplace-role-note strong { color:#526780; }
+.marketplace-catalog-toolbar>span { display:inline-flex; align-items:center; gap:6px; margin-left:auto; color:#8491a2; font-size:8px; }
+.marketplace-service-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:13px; }
+.marketplace-service-card { display:flex; flex-direction:column; min-width:0; padding:18px; border:1px solid #e7ebf0; border-radius:12px; background:#fff; box-shadow:0 8px 28px rgba(30,49,76,.035); }
+.marketplace-service-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.marketplace-service-price { color:#29496f; font-size:10px; font-weight:750; text-align:right; }
+.marketplace-service-card h2 { margin:8px 0 5px; color:#2d4058; font-size:15px; }
+.marketplace-service-card>p { min-height:60px; margin:0; color:#78879a; font-size:9px; line-height:1.7; white-space:pre-wrap; }
+.marketplace-service-meta { display:flex; justify-content:space-between; gap:8px; margin-top:12px; padding-block:10px; border-block:1px solid #edf0f4; color:#75859b; font-size:8px; }
+.marketplace-service-meta span { display:inline-flex; align-items:center; gap:4px; }
+.marketplace-service-card>ul { display:grid; gap:5px; min-height:70px; margin:12px 0; padding-left:17px; color:#62748b; font-size:9px; }
+.marketplace-service-packages { display:grid; gap:7px; margin-top:auto; }
+.marketplace-service-packages article { display:grid; gap:4px; padding:10px; border:1px solid #e9edf2; border-radius:8px; background:#fafbfd; }
+.marketplace-service-packages article strong { color:#40546e; font-size:9px; }
+.marketplace-service-packages article span { color:#57749a; font-size:8px; font-weight:700; }
+.marketplace-service-packages article small { color:#8793a2; font-size:8px; line-height:1.5; }
+.marketplace-service-card footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:9px; margin-top:14px; padding-top:12px; border-top:1px solid #edf0f4; }
+.marketplace-service-card footer>a:first-child { display:inline-flex; align-items:center; gap:4px; color:#506d92; font-size:9px; font-weight:650; }
+.marketplace-service-card footer .button-primary,.marketplace-service-card footer .button-secondary { min-height:32px; gap:5px; }
+.marketplace-own-service { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; }
+.marketplace-own-service h3 { margin:6px 0; color:#344a64; font-size:12px; }
+.marketplace-own-service p { max-width:700px; margin:0 0 8px; color:#7c899b; font-size:9px; line-height:1.6; }
+.marketplace-own-service>div:first-child>strong { color:#526d90; font-size:9px; }
+.marketplace-own-service>.marketplace-form-actions { grid-column:1/-1; margin-top:0; }
+.marketplace-package-editor-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding-top:8px; border-top:1px solid #edf0f4; }
+.marketplace-package-editor-head>div { display:grid; gap:4px; color:#445973; font-size:10px; }
+.marketplace-package-editor-head small { color:#8491a2; font-size:8px; font-weight:400; }
+.marketplace-package-editor-head button { min-height:30px; gap:5px; }
+.marketplace-package-fieldset { position:relative; }
+.marketplace-package-remove { position:absolute; top:3px; right:4px; width:25px; height:25px; border:0; color:#98645f; background:transparent; cursor:pointer; }
+.marketplace-request-row { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; }
+.marketplace-request-row>div:first-child { display:grid; gap:6px; }
+.marketplace-request-row small { color:#8894a3; font-size:8px; }
+.marketplace-editor-dialog { max-height:min(90vh,900px); overflow:auto; }
+.draft-milestone-tools,.draft-milestone-editor-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; margin:14px 0; padding:14px; border:1px solid #e6ebf2; border-radius:10px; background:#fafbfd; }
+.draft-milestone-tools>div:first-child,.draft-milestone-editor-heading>div { display:grid; gap:5px; }
+.draft-milestone-tools strong,.draft-milestone-editor-heading strong { color:#405570; font-size:10px; }
+.draft-milestone-tools p,.draft-milestone-editor-heading p { max-width:660px; margin:0; color:#7d8b9d; font-size:9px; line-height:1.6; }
+.draft-milestone-actions,.draft-milestone-editor-footer { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.draft-milestone-actions .button-primary,.draft-milestone-actions .button-secondary,.draft-milestone-editor-footer .button-primary,.draft-milestone-editor-footer .button-secondary { min-height:33px; gap:6px; white-space:nowrap; }
+.draft-milestone-lock-note { margin:12px 0 0; padding:10px 12px; border:1px solid #ebdfc4; border-radius:8px; color:#806a3f; background:#fffcf4; font-size:9px; line-height:1.6; }
+.draft-milestone-editor { display:grid; gap:12px; margin:14px 0; }
+.draft-milestone-editor-heading { align-items:center; margin:0; }
+.draft-milestone-card { position:relative; display:grid; gap:11px; min-width:0; margin:0; padding:17px 14px 14px; border:1px solid #e5eaf0; border-radius:10px; }
+.draft-milestone-card legend { padding:0 5px; color:#647993; font-size:9px; font-weight:750; letter-spacing:.04em; text-transform:uppercase; }
+.draft-milestone-card>label { display:grid; gap:5px; color:#53657d; font-size:9px; font-weight:650; }
+.draft-milestone-card>label small { color:#8a96a5; font-size:8px; font-weight:400; }
+.draft-milestone-card input,.draft-milestone-card textarea { width:100%; min-height:35px; padding:8px 9px; border:1px solid #e0e6ed; border-radius:7px; color:#31445c; background:#fff; font:inherit; font-size:10px; outline:0; }
+.draft-milestone-card textarea { min-height:58px; resize:vertical; line-height:1.55; }
+.draft-milestone-card input:focus,.draft-milestone-card textarea:focus { border-color:#83a9ed; box-shadow:0 0 0 3px rgba(39,101,220,.1); }
+.draft-milestone-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.draft-milestone-grid label { display:grid; gap:5px; color:#53657d; font-size:9px; font-weight:650; }
+.draft-milestone-remove { position:absolute; top:2px; right:8px; display:grid; width:28px; height:28px; place-items:center; border:0; border-radius:6px; color:#9b6a63; background:transparent; cursor:pointer; }
+.draft-milestone-remove:hover { background:#fff5f3; }
+.draft-milestone-editor-footer { justify-content:space-between; padding-top:2px; }
+.messages-auth-card,.messages-thread,.messages-sidebar { border:1px solid #e6ebf1; border-radius:12px; background:#fff; box-shadow:0 8px 28px rgba(30,49,76,.035); }
+.project-messaging-card .button-secondary { min-height:32px; gap:6px; }
+.messages-auth-card { display:grid; justify-items:center; gap:9px; max-width:540px; margin:24px auto; padding:32px 22px; text-align:center; }
+.messages-auth-card>span,.messages-thread-empty>span { display:grid; width:42px; height:42px; place-items:center; border-radius:12px; color:#5275a3; background:#eff4fa; }
+.messages-auth-card h2,.messages-thread-empty h2 { margin:2px 0 0; color:#344a64; font-size:15px; }
+.messages-auth-card p,.messages-thread-empty p { max-width:450px; margin:0; color:#7c899b; font-size:10px; line-height:1.7; }
+.messages-auth-card .button-primary { min-height:34px; gap:6px; margin-top:5px; }
+.messages-security-note,.messages-feedback { display:flex; align-items:center; gap:8px; margin:12px 0; padding:10px 12px; border:1px solid #dce7f1; border-radius:8px; color:#60758f; background:#f8fbfe; font-size:9px; line-height:1.5; }
+.messages-feedback { border-color:#d7e8dc; color:#387353; background:#f5fbf7; }
+.messages-feedback.is-error { border-color:#efd7d5; color:#9d4b44; background:#fff8f7; }
+.messages-workspace { display:grid; grid-template-columns:minmax(240px,300px) minmax(0,1fr); gap:13px; min-height:640px; margin-top:14px; }
+.messages-sidebar { overflow:hidden; }
+.messages-tabs { display:grid; grid-template-columns:1fr 1fr; border-bottom:1px solid #e9edf2; }
+.messages-tabs button { display:flex; align-items:center; justify-content:center; gap:6px; min-height:45px; border:0; border-bottom:2px solid transparent; color:#7c8a9b; background:#fff; font:inherit; font-size:9px; cursor:pointer; }
+.messages-tabs button.active { border-bottom-color:#4e79b5; color:#3f628e; font-weight:700; }
+.messages-tabs button b { display:grid; min-width:17px; height:17px; place-items:center; padding:0 4px; border-radius:999px; color:#fff; background:#507bb6; font-size:8px; }
+.messages-conversation-list,.messages-notification-list { display:grid; align-content:start; max-height:690px; overflow:auto; }
+.messages-conversation-row { display:flex; align-items:center; gap:10px; width:100%; padding:13px 12px; border:0; border-bottom:1px solid #edf0f3; color:inherit; background:#fff; text-align:left; cursor:pointer; }
+.messages-conversation-row:hover,.messages-conversation-row.selected { background:#f6f9fd; }
+.messages-avatar { display:grid; width:34px; height:34px; flex:0 0 auto; place-items:center; border-radius:50%; color:#58759b; background:#eaf0f7; font-size:9px; font-weight:750; }
+.messages-conversation-copy { display:grid; min-width:0; flex:1; gap:4px; }
+.messages-conversation-copy strong,.messages-notification-row strong { overflow:hidden; color:#405570; font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
+.messages-conversation-copy small { overflow:hidden; color:#7c8da1; font-size:8px; text-overflow:ellipsis; white-space:nowrap; }
+.messages-conversation-copy>span { overflow:hidden; color:#8a96a4; font-size:8px; text-overflow:ellipsis; white-space:nowrap; }
+.messages-unread-count { display:grid; min-width:18px; height:18px; place-items:center; padding:0 4px; border-radius:999px; color:#fff; background:#537fba; font-size:8px; }
+.messages-empty-inline { display:grid; justify-items:start; gap:7px; margin:0; padding:18px 14px; color:#8390a0; font-size:9px; line-height:1.6; }
+.messages-empty-inline strong { color:#536a85; font-size:10px; }
+.messages-empty-inline a { display:inline-flex; align-items:center; gap:4px; color:#426eaa; font-size:9px; font-weight:650; }
+.messages-notification-row { display:flex; align-items:flex-start; gap:9px; width:100%; padding:12px; border:0; border-bottom:1px solid #edf0f3; background:#fff; text-align:left; cursor:pointer; }
+.messages-notification-row.unread { background:#f7faff; }
+.messages-notification-icon { display:grid; width:27px; height:27px; flex:0 0 auto; place-items:center; border-radius:8px; color:#5b79a2; background:#edf3fa; }
+.messages-notification-row>span:nth-child(2) { display:grid; min-width:0; flex:1; gap:4px; }
+.messages-notification-row small { overflow:hidden; color:#77879a; font-size:8px; text-overflow:ellipsis; white-space:nowrap; }
+.messages-notification-row time { color:#98a2af; font-size:7px; }
+.messages-notification-row>i { width:7px; height:7px; margin-top:5px; border-radius:50%; background:#507bb6; }
+.messages-thread { display:flex; min-width:0; flex-direction:column; overflow:hidden; }
+.messages-thread-header { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding:17px 19px 13px; border-bottom:1px solid #edf0f3; }
+.messages-thread-eyebrow { color:#8292a5; font-size:7px; font-weight:750; letter-spacing:.1em; }
+.messages-thread-header h2 { margin:6px 0 3px; color:#344a64; font-size:14px; }
+.messages-thread-header p { margin:0; color:#8290a1; font-size:9px; }
+.messages-thread-actions { display:flex; align-items:center; flex-wrap:wrap; gap:9px; }
+.messages-thread-actions .button-secondary { min-height:30px; gap:5px; }
+.messages-project-link { display:inline-flex; align-items:center; gap:4px; color:#56769f; font-size:8px; font-weight:650; }
+.messages-thread-status { display:flex; align-items:center; gap:6px; padding:9px 17px; color:#8390a0; font-size:8px; }
+.messages-thread-status>span:first-child { width:6px; height:6px; border-radius:50%; background:#c7cdd5; }
+.messages-thread-status>span:first-child.connected { background:#52a67a; box-shadow:0 0 0 3px #e8f5ed; }
+.messages-thread-status>span:last-child { margin-left:auto; }
+.messages-thread-status button { padding:4px 7px; border:1px solid #e1e7ef; border-radius:5px; color:#5c7290; background:#fff; font:inherit; font-size:7px; cursor:pointer; }
+.messages-search { display:grid; gap:5px; padding:0 17px 10px; color:#718199; font-size:8px; }
+.messages-search input { min-height:32px; padding:7px 9px; border:1px solid #e3e8ef; border-radius:7px; color:#334a65; background:#fbfcfe; font:inherit; font-size:9px; }
+.messages-history { display:flex; min-height:240px; max-height:450px; flex:1; flex-direction:column; gap:10px; overflow:auto; padding:13px 17px; border-block:1px solid #edf0f3; background:#fbfcfe; }
+.message-bubble { display:grid; align-self:flex-start; max-width:min(82%,620px); gap:6px; padding:10px 12px 8px; border:1px solid #e4e9f0; border-radius:10px 10px 10px 3px; background:#fff; }
+.message-bubble.mine { align-self:flex-end; border-color:#d9e6f4; border-radius:10px 10px 3px 10px; background:#f1f6fc; }
+.message-bubble>strong { color:#59718e; font-size:8px; }
+.message-bubble>p { margin:0; color:#4d6077; font-size:9px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
+.message-bubble>small { justify-self:end; color:#95a0ad; font-size:7px; }
+.message-attachment { display:inline-flex; align-items:center; gap:6px; max-width:100%; padding:7px 9px; border:1px solid #e4eaf1; border-radius:6px; color:#4e7099; background:#fff; font-size:8px; overflow-wrap:anywhere; }
+.message-attachment.unavailable { color:#929daa; }
+.messages-composer { display:grid; gap:9px; padding:12px 17px 9px; }
+.messages-composer>textarea { width:100%; min-height:65px; resize:vertical; padding:10px; border:1px solid #e0e6ed; border-radius:8px; color:#344a64; background:#fff; font:inherit; font-size:9px; line-height:1.6; outline:0; }
+.messages-composer>textarea:focus { border-color:#83a9ed; box-shadow:0 0 0 3px rgba(39,101,220,.1); }
+.messages-composer>div:last-child { display:flex; align-items:center; flex-wrap:wrap; gap:9px; }
+.messages-composer>div:last-child>small { flex:1; color:#8b97a5; font-size:7px; }
+.messages-composer .button-primary { min-height:31px; gap:6px; }
+.messages-attach-button { display:inline-flex; align-items:center; gap:5px; min-height:29px; padding:0 8px; border:1px solid #e2e8ef; border-radius:6px; color:#60758e; background:#fff; font-size:8px; cursor:pointer; }
+.messages-attach-button input { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+.messages-pending-files { display:flex; flex-wrap:wrap; gap:6px; }
+.messages-pending-files>span { display:inline-flex; align-items:center; gap:5px; padding:5px 7px; border:1px solid #e5eaf0; border-radius:6px; color:#697c92; background:#fafbfd; font-size:8px; }
+.messages-pending-files button { display:grid; width:19px; height:19px; place-items:center; border:0; color:#98645f; background:transparent; cursor:pointer; }
+.messages-blocked-note { display:flex; align-items:center; gap:8px; margin:12px 17px; padding:10px; border:1px solid #ebdfc4; border-radius:7px; color:#806a3f; background:#fffcf4; font-size:8px; }
+.messages-report-form { padding:0 17px 13px; }
+.messages-report-form details { color:#7c8999; font-size:8px; }
+.messages-report-form summary { display:flex; align-items:center; gap:5px; cursor:pointer; }
+.messages-report-form details>label { display:grid; gap:4px; margin-top:9px; color:#64758b; }
+.messages-report-form select,.messages-report-form textarea { max-width:420px; min-height:31px; padding:7px; border:1px solid #e2e7ed; border-radius:6px; color:#41556e; background:#fff; font:inherit; font-size:8px; }
+.messages-report-form textarea { min-height:52px; }
+.messages-report-form .button-secondary { min-height:29px; margin-top:8px; }
+.messages-thread-empty { display:grid; flex:1; align-content:center; justify-items:center; gap:10px; padding:30px; text-align:center; }
+.messages-thread-empty>p:last-child { display:flex; align-items:center; gap:5px; }
+@media (max-width:760px) {
+  .marketplace-toolbar,.marketplace-catalog-toolbar { align-items:stretch; }
+  .marketplace-toolbar>select,.marketplace-toolbar>input,.marketplace-catalog-toolbar>select { max-width:none; flex:1 1 145px; }
+  .marketplace-budget-filter { flex:1 1 100%; }
+  .marketplace-budget-filter input { flex:1; }
+  .marketplace-service-grid { grid-template-columns:1fr; }
+  .marketplace-job-top,.marketplace-detail-top { flex-direction:column; gap:9px; }
+  .marketplace-budget { text-align:left; }
+  .marketplace-offer-row,.marketplace-request-row { flex-direction:column; }
+  .draft-milestone-tools { flex-direction:column; }
+  .messages-workspace { grid-template-columns:1fr; }
+  .messages-sidebar { max-height:270px; }
+  .messages-conversation-list,.messages-notification-list { max-height:218px; }
+  .messages-thread { min-height:620px; }
+}
+@media (max-width:480px) {
+  .marketplace-form-grid { grid-template-columns:1fr; }
+  .marketplace-job-card,.marketplace-proposal-box,.marketplace-offers-panel,.marketplace-service-owner { padding:15px; }
+  .marketplace-job-bottom { align-items:flex-start; flex-direction:column; }
+  .marketplace-catalog-toolbar>span { margin-left:0; }
+  .draft-milestone-editor-heading { align-items:flex-start; flex-direction:column; }
+  .draft-milestone-grid { grid-template-columns:1fr; }
+  .messages-thread-header { flex-direction:column; }
+  .messages-thread-actions { width:100%; justify-content:space-between; }
+  .messages-composer>div:last-child>small { flex-basis:100%; order:3; }
+  .message-bubble { max-width:94%; }
+}
+
+.hourly-empty { display:grid; justify-items:start; gap:12px; padding:28px; border:1px solid var(--line); border-radius:16px; background:#fff; color:var(--muted); }
+.hourly-empty h2,.hourly-empty strong { margin:0; color:var(--ink); }
+.hourly-feedback { display:flex; align-items:center; gap:8px; margin:12px 0; padding:12px 14px; border:1px solid #b9e2d0; border-radius:12px; background:#f0faf5; color:#23674d; }
+.hourly-feedback.is-error { border-color:#f0c2c2; background:#fff5f4; color:#933f3b; }
+.hourly-rate-card { display:grid; grid-template-columns:1fr auto; gap:7px 20px; align-items:center; margin-bottom:18px; padding:22px 24px; border:1px solid #d9e8e1; border-radius:16px; background:linear-gradient(115deg,#f2fbf6,#fff 68%); }
+.hourly-rate-card>span { display:flex; align-items:center; gap:8px; color:#42735f; font-size:11px; font-weight:800; letter-spacing:.09em; }
+.hourly-rate-card>strong { grid-column:2; grid-row:1 / span 2; color:#163d30; font-size:28px; }
+.hourly-rate-card>strong small { font-size:14px; font-weight:600; }
+.hourly-rate-card>p { max-width:780px; margin:0; color:var(--muted); font-size:13px; line-height:1.55; }
+.hourly-work-grid { display:grid; grid-template-columns:minmax(290px,.85fr) minmax(0,1.45fr); gap:18px; align-items:start; }
+.hourly-entry-panel,.hourly-history-panel { padding:20px; }
+.hourly-panel-heading { display:flex; gap:12px; align-items:center; margin-bottom:17px; }
+.hourly-panel-heading>div { flex:1; min-width:0; }
+.hourly-panel-heading h2 { margin:0 0 4px; font-size:16px; }
+.hourly-panel-heading p { margin:0; color:var(--muted); font-size:12px; line-height:1.45; }
+.hourly-icon { display:grid; width:36px; height:36px; flex:0 0 36px; place-items:center; border-radius:11px; background:#eef6f1; color:#3d765e; }
+.hourly-timer-form,.hourly-manual-form { display:grid; gap:13px; }
+.hourly-manual-form { margin-top:22px; padding-top:18px; border-top:1px solid var(--line); }
+.hourly-manual-form h3 { margin:0; font-size:14px; }
+.hourly-timer-form label,.hourly-manual-form label,.hourly-review-actions>label { display:grid; gap:6px; color:var(--ink); font-size:12px; font-weight:650; }
+.hourly-timer-form input,.hourly-manual-form input,.hourly-manual-form textarea,.hourly-review-actions textarea { width:100%; min-width:0; border:1px solid var(--line); border-radius:9px; padding:10px 11px; background:#fff; color:var(--ink); font:inherit; font-size:13px; }
+.hourly-manual-form textarea,.hourly-review-actions textarea { min-height:82px; resize:vertical; }
+.hourly-manual-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; align-items:end; }
+.hourly-duration-fields { display:flex; align-items:end; gap:7px; }
+.hourly-duration-fields label { flex:1; }
+.hourly-duration-fields>span { padding:0 0 11px; color:var(--muted); }
+.hourly-form-footer { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
+.hourly-form-footer>span { flex:1; color:var(--muted); font-size:11px; }
+.hourly-timer-running { display:flex; justify-content:space-between; gap:15px; padding:16px; border:1px solid #dce8e1; border-radius:12px; background:#f8fcf9; }
+.hourly-timer-running>div:first-child { display:grid; gap:5px; }
+.hourly-timer-running strong { color:#183e31; font-variant-numeric:tabular-nums; font-size:26px; }
+.hourly-timer-running p { margin:0; color:var(--muted); font-size:12px; }
+.hourly-timer-running>div:last-child { display:flex; flex-direction:column; justify-content:center; gap:7px; }
+.hourly-entry-list { display:grid; gap:10px; }
+.hourly-entry-card { padding:14px; border:1px solid var(--line); border-radius:12px; background:#fff; }
+.hourly-entry-top { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+.hourly-entry-top>div { display:grid; gap:4px; }
+.hourly-entry-top strong { color:var(--ink); font-size:13px; }
+.hourly-entry-top span { color:var(--muted); font-size:11px; }
+.hourly-entry-card>p { margin:11px 0; color:var(--ink); font-size:13px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+.hourly-entry-actions,.hourly-review-actions>div { display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; }
+.hourly-review-actions { display:grid; gap:8px; padding-top:11px; border-top:1px solid var(--line); }
+.hourly-review-note { display:grid; gap:4px; margin:8px 0 11px; padding:10px; border-radius:9px; background:#f3f7f4; font-size:12px; }
+.hourly-review-note.is-disputed { background:#fff5f2; color:#8c4337; }
+.hourly-empty-inline { display:grid; justify-items:center; gap:7px; padding:30px 14px; text-align:center; color:var(--muted); font-size:12px; }
+.hourly-empty-inline strong { color:var(--ink); font-size:13px; }
+@media (max-width:900px) { .hourly-work-grid { grid-template-columns:1fr; } }
+@media (max-width:560px) {
+  .hourly-rate-card { grid-template-columns:1fr; }
+  .hourly-rate-card>strong { grid-column:auto; grid-row:auto; }
+  .hourly-timer-running { flex-direction:column; }
+  .hourly-timer-running>div:last-child { flex-direction:row; flex-wrap:wrap; }
+  .hourly-manual-grid { grid-template-columns:1fr; }
+}
+.moderation-empty { display:grid; gap:12px; justify-items:start; padding:22px; color:var(--muted); }
+.moderation-empty h2 { margin:0; color:var(--ink); font-size:16px; }
+.moderation-empty-inline { display:flex; align-items:center; gap:8px; padding:18px 10px; color:var(--muted); font-size:12px; }
+.moderation-feedback { display:flex; gap:8px; align-items:center; padding:11px 13px; border:1px solid #cfe4d8; border-radius:10px; color:#23674d; background:#f1faf5; font-size:12px; }
+.moderation-feedback.is-error { border-color:#f0c2c2; color:#933f3b; background:#fff5f4; }
+.moderation-summary { display:flex; align-items:center; gap:12px; margin-bottom:16px; padding:16px; color:#37725b; }
+.moderation-summary>span { display:grid; gap:4px; }
+.moderation-summary strong { color:var(--ink); font-size:14px; }
+.moderation-summary small { color:var(--muted); font-size:11px; }
+.moderation-section { margin-bottom:16px; padding:19px; }
+.moderation-list { display:grid; gap:10px; }
+.moderation-report-card { display:grid; gap:10px; padding:14px; border:1px solid var(--line); border-radius:12px; background:#fff; }
+.moderation-card-heading { display:flex; align-items:center; gap:10px; }
+.moderation-card-heading>div { flex:1; min-width:0; display:grid; gap:4px; }
+.moderation-card-heading>div strong { color:var(--ink); font-size:13px; }
+.moderation-card-heading>div small { color:var(--muted); font-size:11px; text-transform:capitalize; }
+.moderation-icon { display:grid; width:34px; height:34px; place-items:center; border-radius:10px; background:#f3f6fb; color:#55709a; }
+.moderation-report-card>p { margin:0; color:#526278; font-size:12px; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+.moderation-report-card blockquote { margin:0; padding:11px 13px; border-left:3px solid #d3dfef; background:#f7f9fc; color:#43536a; font-size:12px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
+.moderation-resolution { padding-top:9px; border-top:1px solid var(--line); }
+.moderation-actions { display:grid; gap:8px; padding-top:10px; border-top:1px solid var(--line); }
+.moderation-actions label { display:grid; gap:5px; color:var(--muted); font-size:11px; }
+.moderation-actions textarea { min-height:60px; padding:9px; border:1px solid var(--line); border-radius:8px; resize:vertical; font:inherit; font-size:12px; }
+.moderation-actions>div { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:8px; }
+.account-request-message { margin:10px 0; padding:11px 13px; border:1px solid #cfe4d8; border-radius:10px; color:#23674d; background:#f1faf5; font-size:12px; line-height:1.5; }
+.account-request-message.is-error { border-color:#f0c2c2; color:#933f3b; background:#fff5f4; }
+.account-deletion-section { display:grid; gap:15px; margin-top:18px; padding:19px; border-color:#eadfdd; }
+.account-deletion-section>div:first-child h2 { display:flex; align-items:center; gap:8px; margin:0 0 8px; color:#513b39; font-size:15px; }
+.account-deletion-section>div:first-child>p { max-width:850px; margin:0; color:var(--muted); font-size:12px; line-height:1.55; }
+.account-deletion-form { display:flex; align-items:end; flex-wrap:wrap; gap:12px; }
+.account-deletion-form label { display:grid; gap:6px; min-width:min(100%,300px); color:var(--muted); font-size:11px; }
+.account-deletion-form input { min-height:38px; padding:9px 10px; border:1px solid var(--line); border-radius:8px; font:inherit; font-size:12px; }
+.account-deletion-status { display:grid; justify-items:start; gap:7px; padding:13px; border:1px solid var(--line); border-radius:10px; background:#fbfcfd; }
+.account-deletion-status strong { color:var(--ink); font-size:13px; text-transform:capitalize; }
+.account-deletion-status small,.account-deletion-status p,.account-deletion-signin { margin:0; color:var(--muted); font-size:11px; }
+.settings-help { flex-wrap:wrap; }
+.settings-help .button-text { margin-left:auto; }
+@media (max-width:560px) { .moderation-card-heading { flex-wrap:wrap; }.moderation-card-heading .status-pill { margin-left:44px; }.account-deletion-form { align-items:stretch; flex-direction:column; }.account-deletion-form label,.account-deletion-form button { width:100%; } }

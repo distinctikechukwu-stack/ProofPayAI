@@ -1,0 +1,294 @@
+{
+  "info": {
+    "name": "ProofPay AI API",
+    "description": "Secret-free API requests for local ProofPay AI development. Set apiBase and accessToken in a private Postman environment. Keep PayPal and Supabase service-role credentials server-side.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      { "key": "token", "value": "{{accessToken}}", "type": "string" }
+    ]
+  },
+  "variable": [
+    { "key": "apiBase", "value": "http://localhost:4000" },
+    { "key": "accessToken", "value": "" },
+    { "key": "projectId", "value": "" },
+    { "key": "agreementVersionId", "value": "" },
+    { "key": "milestoneId", "value": "" },
+    { "key": "scopeRequestId", "value": "" },
+    { "key": "analysisId", "value": "" },
+    { "key": "changeOrderVersionId", "value": "" },
+    { "key": "idempotencyKey", "value": "" },
+    { "key": "invoiceId", "value": "" },
+    { "key": "conversationId", "value": "" },
+    { "key": "notificationId", "value": "" }
+    ,{ "key": "jobReportId", "value": "" }
+    ,{ "key": "conversationReportId", "value": "" }
+    ,{ "key": "deletionRequestId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Health and status",
+      "item": [
+        {
+          "name": "Health",
+          "request": { "method": "GET", "url": "{{apiBase}}/health" }
+        },
+        {
+          "name": "Integration status (booleans only)",
+          "request": { "method": "GET", "url": "{{apiBase}}/api/status" }
+        }
+      ]
+    },
+    {
+      "name": "Projects and agreements",
+      "item": [
+        {
+          "name": "List my projects",
+          "request": { "method": "GET", "url": "{{apiBase}}/api/projects" }
+        },
+        {
+          "name": "Read project details",
+          "request": { "method": "GET", "url": "{{apiBase}}/api/projects/{{projectId}}" }
+        },
+        {
+          "name": "Create a project draft",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"{{idempotencyKey}}\",\n  \"title\": \"A small website\",\n  \"description\": \"Design and build a five-page marketing site.\",\n  \"clientName\": \"Northstar Studio\",\n  \"budgetMinor\": 60000,\n  \"currency\": \"USD\",\n  \"requirements\": [\"Responsive on mobile and desktop.\"],\n  \"milestones\": [\n    {\n      \"sequence\": 1,\n      \"title\": \"Build the site\",\n      \"description\": \"Implement the agreed pages.\",\n      \"deliverables\": [\"Responsive website\"],\n      \"acceptanceCriteria\": [\"All five pages load on desktop and mobile.\"],\n      \"completionConditions\": [\"Client reviews and approves the delivery.\"],\n      \"amountMinor\": 60000\n    }\n  ]\n}"
+            },
+            "url": "{{apiBase}}/api/projects"
+          }
+        },
+        {
+          "name": "Accept an agreement version",
+          "request": { "method": "POST", "url": "{{apiBase}}/api/agreements/{{agreementVersionId}}/accept" }
+        }
+      ]
+    },
+    {
+      "name": "Milestones",
+      "item": [
+        {
+          "name": "Start a milestone",
+          "request": { "method": "POST", "url": "{{apiBase}}/api/milestones/{{milestoneId}}/start" }
+        },
+        {
+          "name": "Submit deliverable evidence",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"description\": \"Completed the agreed delivery.\",\n  \"evidenceUrl\": \"https://example.com/deliverable\",\n  \"idempotencyKey\": \"{{idempotencyKey}}\"\n}" },
+            "url": "{{apiBase}}/api/milestones/{{milestoneId}}/deliverables"
+          }
+        },
+        {
+          "name": "Approve a deliverable",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"approved\",\n  \"note\": \"\",\n  \"idempotencyKey\": \"{{idempotencyKey}}\"\n}" },
+            "url": "{{apiBase}}/api/milestones/{{milestoneId}}/reviews"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Hourly contracts and timesheets",
+      "item": [
+        { "name": "Read hourly project work and timer", "request": { "method": "GET", "url": "{{apiBase}}/api/projects/{{projectId}}/hourly" } },
+        {
+          "name": "Create a manual draft time entry",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"idempotencyKey\": \"{{idempotencyKey}}\",\n  \"workDate\": \"2026-10-30\",\n  \"durationSeconds\": 3600,\n  \"description\": \"Review the approved project requirements\"\n}" },
+            "url": "{{apiBase}}/api/projects/{{projectId}}/hourly/entries"
+          }
+        },
+        {
+          "name": "Edit a draft time entry",
+          "request": {
+            "method": "PATCH",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"workDate\": \"2026-10-30\",\n  \"durationSeconds\": 3600,\n  \"description\": \"Review the approved project requirements\"\n}" },
+            "url": "{{apiBase}}/api/hourly/time-entries/{{timeEntryId}}"
+          }
+        },
+        { "name": "Submit an entry for client review", "request": { "method": "POST", "url": "{{apiBase}}/api/hourly/time-entries/{{timeEntryId}}/submit" }, "description": "Only the freelancer who owns an active-contract draft can submit it." },
+        {
+          "name": "Approve or dispute a submitted entry",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"disputed\",\n  \"details\": \"Please clarify which deliverable this time covers.\"\n}" },
+            "url": "{{apiBase}}/api/hourly/time-entries/{{timeEntryId}}/review"
+          }
+        },
+        {
+          "name": "Start the project timer",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"description\": \"Implement the accepted dashboard layout\"\n}" },
+            "url": "{{apiBase}}/api/projects/{{projectId}}/hourly/timer"
+          }
+        },
+        {
+          "name": "Pause, resume, or stop the project timer",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"action\": \"stop\"\n}" },
+            "url": "{{apiBase}}/api/hourly/timers/{{timerId}}"
+          }
+        },
+        { "name": "List approved hourly invoice candidates", "request": { "method": "GET", "url": "{{apiBase}}/api/invoices/hourly-candidates" } },
+        { "name": "Create a Sandbox draft from approved hours (no body accepted)", "request": { "method": "POST", "url": "{{apiBase}}/api/invoices/hourly/projects/{{projectId}}/create" }, "description": "The server selects approved, unreserved entries and derives the amount from the accepted hourly rate before committing the PayPal operation claim." }
+      ]
+    },
+    {
+      "name": "PayPal Sandbox invoices",
+      "item": [
+        {
+          "name": "List invoices and eligible milestones",
+          "request": { "method": "GET", "url": "{{apiBase}}/api/invoices" }
+        },
+        {
+          "name": "Create a Sandbox draft for an approved milestone (explicit confirmation required in the app)",
+          "request": { "method": "POST", "url": "{{apiBase}}/api/invoices/milestones/{{milestoneId}}/create" }
+        },
+        {
+          "name": "Send a saved draft to its project client (separate confirmation required in the app)",
+          "request": { "method": "POST", "url": "{{apiBase}}/api/invoices/{{invoiceId}}/send" }
+        },
+        {
+          "name": "Reconcile an unknown create or send outcome",
+          "request": { "method": "POST", "url": "{{apiBase}}/api/invoices/{{invoiceId}}/reconcile" }
+        }
+      ]
+    },
+    {
+      "name": "Project messaging and notifications",
+      "item": [
+        { "name": "List my project conversations", "request": { "method": "GET", "url": "{{apiBase}}/api/conversations" } },
+        {
+          "name": "Open a project conversation (member check required)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"projectId\": \"{{projectId}}\"\n}" },
+            "url": "{{apiBase}}/api/conversations"
+          }
+        },
+        { "name": "Read recent messages", "request": { "method": "GET", "url": "{{apiBase}}/api/conversations/{{conversationId}}/messages" } },
+        {
+          "name": "Send an idempotent project message",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"idempotencyKey\": \"{{idempotencyKey}}\",\n  \"body\": \"I have shared the latest project update.\",\n  \"attachments\": []\n}" },
+            "url": "{{apiBase}}/api/conversations/{{conversationId}}/messages"
+          }
+        },
+        { "name": "Mark conversation read", "request": { "method": "POST", "url": "{{apiBase}}/api/conversations/{{conversationId}}/read" } },
+        { "name": "Block the other project participant", "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"action\": \"block\"\n}" }, "url": "{{apiBase}}/api/conversations/{{conversationId}}/block" } },
+        { "name": "List notifications", "request": { "method": "GET", "url": "{{apiBase}}/api/notifications" } },
+        { "name": "Mark a notification read", "request": { "method": "POST", "url": "{{apiBase}}/api/notifications/{{notificationId}}/read" } }
+      ]
+    },
+    {
+      "name": "Account privacy and administrator moderation",
+      "item": [
+        { "name": "Read my account deletion request", "request": { "method": "GET", "url": "{{apiBase}}/api/account/deletion" } },
+        {
+          "name": "Request account deletion review (does not erase data)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"confirmation\": \"REQUEST DELETION\"\n}" },
+            "url": "{{apiBase}}/api/account/deletion"
+          }
+        },
+        { "name": "Cancel a pending account deletion request", "request": { "method": "POST", "url": "{{apiBase}}/api/account/deletion/cancel" } },
+        { "name": "Read administrator moderation queue (admin only)", "request": { "method": "GET", "url": "{{apiBase}}/api/admin/moderation" } },
+        {
+          "name": "Review job listing report (admin only)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"no_action\",\n  \"note\": \"Reviewed for policy compliance.\"\n}" },
+            "url": "{{apiBase}}/api/admin/moderation/jobs/{{jobReportId}}"
+          }
+        },
+        {
+          "name": "Review conversation report (admin only)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"no_action\",\n  \"note\": \"Reviewed for policy compliance.\"\n}" },
+            "url": "{{apiBase}}/api/admin/moderation/conversations/{{conversationReportId}}"
+          }
+        },
+        {
+          "name": "Move account request to review (admin only; does not delete data)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"under_review\",\n  \"note\": \"Retention review started.\"\n}" },
+            "url": "{{apiBase}}/api/admin/moderation/deletion-requests/{{deletionRequestId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "AI and scope changes",
+      "item": [
+        {
+          "name": "Generate milestone draft (requires OpenAI configuration)",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"projectTitle\": \"A small website\",\n  \"projectDescription\": \"Design and build a five-page marketing site.\",\n  \"requirements\": [\"Responsive on mobile and desktop.\"],\n  \"budgetMinor\": 60000,\n  \"currency\": \"USD\"\n}" },
+            "url": "{{apiBase}}/api/ai/milestones"
+          }
+        },
+        {
+          "name": "Submit a client scope request",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"requestText\": \"Please add a booking calendar.\",\n  \"idempotencyKey\": \"{{idempotencyKey}}\"\n}" },
+            "url": "{{apiBase}}/api/projects/{{projectId}}/scope-requests"
+          }
+        },
+        {
+          "name": "Analyze a saved request (requires OpenAI, Supabase, and server-only service-role configuration)",
+          "request": { "method": "POST", "url": "{{apiBase}}/api/projects/{{projectId}}/scope-requests/{{scopeRequestId}}/analyze" }
+        },
+        {
+          "name": "Submit a freelancer-priced amendment",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"idempotencyKey\": \"{{idempotencyKey}}\",\n  \"title\": \"Add booking calendar\",\n  \"description\": \"Add a client-facing booking calendar.\",\n  \"amountDeltaMinor\": 25000,\n  \"scheduleDeltaDays\": 7,\n  \"deliverables\": [\"Booking calendar\"],\n  \"openQuestions\": [\"Which calendar provider should be used?\"],\n  \"analysisId\": \"{{analysisId}}\"\n}" },
+            "url": "{{apiBase}}/api/projects/{{projectId}}/scope-requests/{{scopeRequestId}}/change-orders"
+          }
+        },
+        {
+          "name": "Accept an amendment",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"decision\": \"accept\"\n}" },
+            "url": "{{apiBase}}/api/change-orders/{{changeOrderVersionId}}/decision"
+          }
+        }
+      ]
+    }
+  ]
+}

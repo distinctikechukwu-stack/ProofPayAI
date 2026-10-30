@@ -1,0 +1,28 @@
+@theme {
+  --color-ink-950: #142238;
+  --color-ink-900: #1c2b43;
+  --color-ink-700: #40516b;
+  --color-surface: #f5f7fa;
+  --color-surface-raised: #ffffff;
+  --color-border: #e4e9ef;
+  --color-muted: #748198;
+  --color-accent-700: #1553c7;
+  --color-accent-600: #2465df;
+  --color-accent-100: #e8f0ff;
+  --color-success-700: #147857;
+  --color-warning-700: #a85b14;
+  --color-danger-700: #b42318;
+  --font-sans: Inter, "Segoe UI", system-ui, sans-serif;
+  --radius-card: 1.125rem;
+}
+
+:root {
+  color-scheme: light;
+  font-family: var(--font-sans);
+  color: var(--color-ink-950);
+  background: var(--color-surface);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

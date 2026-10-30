@@ -1,0 +1,61 @@
+/* Keep dense workspace tables and labels comfortably readable at real dashboard sizes. */
+@media (min-width: 621px) {
+  .page-heading p { font-size: 11px; }
+  .demo-notice p { font-size: 9px; }
+  .section-heading h2 { font-size: 13px; }
+  .section-heading p { font-size: 9px; }
+  .status-pill { min-height: 25px; padding-inline: 9px; font-size: 8px; }
+  .stat-card { min-height: 122px; padding: 16px; }
+  .stat-card-label { font-size: 9px; }
+  .stat-card-value { font-size: 25px; }
+  .stat-card-small { font-size: 14px; }
+  .stat-card-note { font-size: 8px; }
+  .current-project-heading h3 { font-size: 12px; }
+  .current-project-heading p { font-size: 9px; }
+  .project-total { font-size: 13px; }
+  .milestone-row { min-height: 59px; }
+  .milestone-info strong { font-size: 9px; }
+  .milestone-info > span { font-size: 8px; }
+  .milestone-row-meta > strong { font-size: 9px; }
+  .card-bottom-link,.text-link,.quiet-button { font-size: 9px; }
+  .request-preview-card h3 { font-size: 11px; }
+  .request-preview-card > p { font-size: 9px; }
+  .request-by strong { font-size: 8px; }
+  .request-by small,.attention-footnote { font-size: 7px; }
+  .activity-step > div strong { font-size: 8px; }
+  .activity-step p,.activity-step time { font-size: 7px; }
+  .project-list-title > a { font-size: 10px; }
+  .project-list-title > span,.project-list-status > span { font-size: 8px; }
+  .project-list-progress strong,.project-list-amount { font-size: 9px; }
+  .agreement-summary { font-size: 10px; }
+  .agreement-data-item strong { font-size: 9px; }
+  .agreement-scope ul,.agreement-scope p { font-size: 8px; }
+  .detail-milestone-title h3 { font-size: 10px; }
+  .detail-milestone-copy > p,.summary-row > span:first-child,.summary-row > strong { font-size: 8px; }
+  .request-message { font-size: 10px; }
+  .collapsible-heading strong { font-size: 9px; }
+  .cited-excerpt blockquote { font-size: 9px; }
+  .affected-row strong { font-size: 8px; }
+  .affected-row small,.analysis-explanation { font-size: 7px; }
+  .analysis-card-head strong { font-size: 9px; }
+  .classification-box > strong { font-size: 10px; }
+  .invoice-setup-banner h2 { font-size: 14px; }
+  .invoice-setup-banner p { font-size: 8px; }
+  .invoice-stat > span:nth-child(2) { font-size: 8px; }
+  .invoice-stat strong { font-size: 16px; }
+  .invoice-eligible-project strong { font-size: 9px; }
+}
+
+@media (min-width: 621px) and (max-width: 920px) {
+  .sidebar { width: 72px; flex-basis: 72px; align-items: center; padding-inline: 8px; }
+  .sidebar-brand { margin: 1px 0 24px; }
+  .sidebar-brand .brand-wordmark,.workspace-meta,.sidebar-chevron,.nav-label,.side-link > span,.sidebar-new-project > span,.sidebar-plan,.support-link > span,.profile-copy,.profile-more { display: none; }
+  .workspace-switcher { justify-content: center; width: 48px; padding: 7px; }
+  .side-link { justify-content: center; width: 48px; padding-inline: 0; }
+  .nav-badge { position: absolute; transform: translate(12px,-10px); }
+  .sidebar-new-project { justify-content: center; width: 48px; margin-inline: 0; padding: 0; }
+  .support-link { justify-content: center; width: 48px; padding: 0; }
+  .profile-row { justify-content: center; width: 48px; }
+  .workspace-content { padding-inline: 22px; }
+  .dashboard-main-grid { grid-template-columns: 1fr; }
+}

@@ -1,0 +1,25 @@
+# ProofPay AI API
+
+Node.js TypeScript REST API. Keep PayPal/AI secrets and access tokens server-side. `paypal-plan.md` at the repository root defines the verified PayPal Invoicing contract and unknown-outcome rules.
+
+From the repository root, start the API with `npm.cmd run dev:api`. The workspace command compiles the TypeScript API and runs the built server with Node's `--env-file-if-exists` option for the root `.env`; restart it after API code changes. Render and other hosts should inject environment variables through their server configuration. `GET /health` remains available without provider credentials.
+
+## Current routes
+
+- `GET /health` and `GET /api/status` are unauthenticated health/configuration checks. Status returns booleans only.
+- Authenticated `GET /api/analytics` aggregates the signed-in user’s RLS-visible project, milestone, and invoice records. Paid totals use integer minor units and include only persisted invoices marked paid.
+- Authenticated `GET /api/timeline` returns milestones joined only to projects visible to the signed-in user, with dates, workflow states, and exact minor-unit amounts.
+- Authenticated `GET /api/invoices` returns RLS-visible invoice records, current-agreement approved milestone candidates, and boolean integration readiness. Candidate data never includes the client billing email.
+- Authenticated `POST /api/invoices/milestones/:milestoneId/create` commits a service-role claim after checking the actual freelancer membership, accepted agreement, dual agreement acceptance, and client approval; it then creates a PayPal Sandbox draft.
+- Authenticated `POST /api/invoices/:invoiceId/send` commits a separate claim before PayPal sends to the approved client. `POST /api/invoices/:invoiceId/reconcile` searches by the saved invoice number or reads the known invoice ID; missing/unknown outcomes never trigger a duplicate write.
+- Unauthenticated `POST /api/webhooks/paypal` validates the PayPal signature with the configured Sandbox webhook ID, reads the current provider invoice, and sends the unique event plus observed state to a service-role-only deduplication RPC. The event body’s payment status is not trusted.
+- Authenticated project routes: `GET /api/projects`, `GET /api/projects/:projectId`, `POST /api/projects`, `POST /api/projects/:projectId/clients`, and `POST /api/projects/:projectId/scope-requests`.
+- Authenticated agreement/milestone routes: `POST /api/agreements/:agreementVersionId/accept`, `POST /api/milestones/:milestoneId/start`, `POST /api/milestones/:milestoneId/deliverables`, and `POST /api/milestones/:milestoneId/reviews`.
+- Authenticated amendment routes: `POST /api/projects/:projectId/scope-requests/:requestId/change-orders` and `POST /api/change-orders/:versionId/decision`. The database RPC records the freelancer’s price/schedule proposal and acceptance; the client’s second acceptance locks the addendum state. Base milestone allocation and invoice eligibility are still unchanged.
+- Authenticated AI routes: `POST /api/ai/milestones` produces an editable milestone draft with exact server-side budget allocation; `POST /api/projects/:projectId/scope-requests/:requestId/analyze` compares a saved request with the accepted agreement and records only citation-checked analysis. Both are rate-limited and require server-side `OPENAI_API_KEY` and `OPENAI_MODEL` unless an injected test generator is used.
+
+User-facing reads and project mutations validate a Supabase bearer token and use that token plus the public anon key. Scope-analysis audit writes and PayPal operation claims/state updates use service-role-only RPCs with the actor ID that the API verified from Supabase Auth; those functions independently check membership and role. The PayPal create RPC returns the client billing email only to the server-side caller. The service-role key stays server-side, and authenticated browser clients cannot call these functions. Live behavior still requires applying both migrations and exercising the configured Supabase project.
+
+Structured AI output uses the OpenAI Responses API with strict JSON Schema, `store: false`, a request timeout, output validation, and exact source excerpt checks. AI results are recommendations for human review; they cannot accept or change an agreement. Real provider calls and database audit behavior are not verified until credentials are configured and the migration is applied.
+
+PayPal uses the fixed `https://api-m.sandbox.paypal.com` host and server-only OAuth client credentials. The APIMatic TypeScript SDK map has no Invoicing operation, so invoice REST calls do not use unrelated generated SDK operations. Provider errors are mapped without returning debug IDs or credentials; unknown writes stay locked until a provider search/show read resolves them. No live Sandbox call, webhook verification, or database migration application has been performed in this environment.

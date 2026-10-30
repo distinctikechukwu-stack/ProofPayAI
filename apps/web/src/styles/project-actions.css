@@ -1,0 +1,36 @@
+.route-loading { min-height: 45vh; display: grid; place-items: center; color: #73839a; font-size: 14px; }
+.project-action-form { display: grid; gap: 9px; margin-top: 12px; padding: 11px; border: 1px solid #e9edf3; border-radius: 9px; background: #fafbfd; }
+.project-action-form label { display: grid; gap: 5px; color: #66778d; font-size: 8px; font-weight: 650; }
+.project-action-form input,.project-action-form textarea { width: 100%; min-height: 35px; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 7px; outline: none; color: #394d66; background: #fff; font: inherit; font-weight: 450; }
+.project-action-form textarea { min-height: 80px; resize: vertical; }
+.project-action-form input:focus,.project-action-form textarea:focus { border-color: #91a9cd; box-shadow: 0 0 0 3px #edf3fb; }
+.project-action-form .button-secondary,.project-action-form .button-primary { min-height: 32px; justify-self: start; padding-inline: 11px; font-size: 8px; }
+.auth-message { margin: 8px 0; padding: 9px 11px; border: 1px solid #eedfd4; border-radius: 7px; color: #8f542d; background: #fff8f1; font-size: 9px; line-height: 1.5; }
+.project-form textarea { min-height: 66px; padding: 9px 10px; border: 1px solid #e5e9ef; border-radius: 7px; outline: none; color: #485b72; background: #fff; font: inherit; resize: vertical; }
+.project-form textarea:focus { border-color: #8ba6ce; box-shadow: 0 0 0 3px #edf3fb; }
+.milestone-suggestion-list { display: grid; gap: 9px; }
+.milestone-suggestion-list>.demo-form-note { margin: 0; font-size: 8px; }
+.milestone-suggestion { min-width: 0; display: grid; gap: 8px; padding: 11px; border: 1px solid #e8edf3; border-radius: 8px; }
+.milestone-suggestion legend { padding-inline: 4px; color: #536a88; font-size: 8px; font-weight: 700; }
+.milestone-suggestion label { display: grid; gap: 5px; color: #67788d; font-size: 8px; font-weight: 650; }
+.milestone-suggestion input,.milestone-suggestion textarea { width: 100%; min-height: 33px; padding: 7px 9px; border: 1px solid #e5eaf1; border-radius: 6px; outline: none; color: #44576f; background: #fff; font: inherit; font-weight: 450; }
+.milestone-suggestion textarea { min-height: 56px; resize: vertical; }
+.milestone-suggestion-detail { color: #7d8ba0; font-size: 8px; line-height: 1.7; }
+.scope-analysis-list { display: grid; gap: 10px; margin-top: 12px; }
+.scope-analysis-card { display: grid; gap: 9px; padding: 12px; border: 1px solid #e8edf3; border-radius: 9px; background: #fff; }
+.scope-analysis-card h3 { margin: 0; color: #40556f; font-size: 10px; }
+.scope-analysis-card .request-message { margin: 0; }
+.scope-analysis-result { display: grid; gap: 8px; color: #586a81; font-size: 9px; line-height: 1.6; }
+.scope-analysis-result>strong { color: #475d79; font-size: 9px; }
+.scope-analysis-result>p { margin: 0; }
+.scope-analysis-result blockquote { margin: 0; padding: 8px 10px; border-left: 2px solid #a9b9d0; border-radius: 0 6px 6px 0; color: #52657d; background: #f7f9fc; }
+.scope-analysis-result blockquote small { color: #8a98aa; }
+.scope-amendment-draft { padding: 10px; border: 1px solid #e9e6fb; border-radius: 7px; background: #faf9ff; }
+.scope-amendment-draft>span { color: #7b6ab9; font-size: 7px; font-weight: 750; letter-spacing: .07em; }
+.scope-amendment-draft h4 { margin: 5px 0; color: #47536c; font-size: 9px; }
+.scope-amendment-draft p,.scope-amendment-draft small { margin: 0; color: #778397; }
+.accepted-amendment-card { display: grid; gap: 7px; padding: 11px; border: 1px solid #e5ebf2; border-radius: 8px; background: #fbfcfe; }
+.accepted-amendment-card h4 { margin: 0; color: #465a73; font-size: 9px; }
+.accepted-amendment-card p,.accepted-amendment-card small { margin: 0; color: #718096; font-size: 8px; line-height: 1.55; }
+.amendment-decision-actions { margin: 0; }
+.amendment-decision-actions p { margin: 0; color: #6f7d91; font-size: 8px; }

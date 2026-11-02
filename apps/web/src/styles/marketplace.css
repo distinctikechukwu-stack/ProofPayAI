@@ -53,6 +53,28 @@
 .marketplace-avatar-small { display:grid; width:31px; height:31px; place-items:center; border-radius:50%; color:#5578a5; background:#eaf0f7; font-size:10px; font-weight:750; }
 .marketplace-applicant-top>div { display:grid; gap:3px; flex:1; color:#42556d; font-size:9px; }
 .marketplace-applicant-top small { color:#8692a2; font-size:8px; }
+.marketplace-review-toolbar { display:grid; grid-template-columns:repeat(2,minmax(170px,1fr)); align-items:end; gap:10px; margin:12px 0; padding:12px; border:1px solid #e9edf2; border-radius:9px; background:#fafbfd; }
+.marketplace-review-toolbar label { display:grid; gap:5px; color:#61728a; font-size:9px; font-weight:650; }
+.marketplace-review-toolbar select { width:100%; min-height:35px; padding:7px 9px; border:1px solid #e0e6ed; border-radius:7px; color:#40556f; background:#fff; font:inherit; font-size:9px; }
+.marketplace-review-toolbar>p { margin:0; color:#7a899d; font-size:9px; }
+.marketplace-review-toolbar>.marketplace-text-action { justify-self:start; }
+.marketplace-proposal-select-row { display:flex; justify-content:flex-end; margin-bottom:8px; }
+.marketplace-proposal-select-row label { display:inline-flex; align-items:center; gap:6px; color:#63758d; font-size:8px; cursor:pointer; }
+.marketplace-proposal-select-row input { accent-color:#3f6fbe; }
+.marketplace-proposal-select-row input:disabled { cursor:not-allowed; }
+.marketplace-comparison-panel { margin-top:18px; padding-top:16px; border-top:1px solid #e9edf2; }
+.marketplace-comparison-panel .marketplace-section-heading { align-items:flex-start; }
+.marketplace-comparison-panel h3 { margin:0 0 6px; color:#30445e; font-size:13px; }
+.marketplace-comparison-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr)); gap:10px; align-items:start; }
+.marketplace-comparison-card { min-width:0; padding:14px; border:1px solid #dfe7f0; border-radius:9px; background:#fbfcfe; }
+.marketplace-comparison-card>header { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding-bottom:10px; border-bottom:1px solid #e9edf2; color:#405771; font-size:9px; }
+.marketplace-comparison-card>header .status-pill { margin-left:auto; }
+.marketplace-comparison-card dl { display:grid; gap:0; margin:0; }
+.marketplace-comparison-card dl>div { display:grid; gap:4px; padding:10px 0; border-bottom:1px solid #edf0f4; }
+.marketplace-comparison-card dl>div:last-child { border-bottom:0; }
+.marketplace-comparison-card dt { color:#8491a2; font-size:8px; font-weight:700; }
+.marketplace-comparison-card dd { min-width:0; margin:0; color:#465a72; font-size:9px; line-height:1.65; overflow-wrap:anywhere; }
+.marketplace-comparison-letter { white-space:pre-wrap; }
 .marketplace-applicant-card>p,.marketplace-request-row p,.marketplace-offer-row p { margin:12px 0; color:#617289; font-size:10px; line-height:1.7; white-space:pre-wrap; }
 .marketplace-text-action { border:0; color:#8d5b55; background:transparent; font:inherit; font-size:9px; cursor:pointer; }
 .marketplace-offer-composer { display:grid; gap:10px; margin-top:13px; padding:13px; border:1px solid #e8edf2; border-radius:8px; background:#fff; }
@@ -210,6 +232,8 @@
   .marketplace-service-grid { grid-template-columns:1fr; }
   .marketplace-job-top,.marketplace-detail-top { flex-direction:column; gap:9px; }
   .marketplace-budget { text-align:left; }
+  .marketplace-review-toolbar { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .marketplace-comparison-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .marketplace-offer-row,.marketplace-request-row { flex-direction:column; }
   .draft-milestone-tools { flex-direction:column; }
   .messages-workspace { grid-template-columns:1fr; }
@@ -219,6 +243,7 @@
 }
 @media (max-width:480px) {
   .marketplace-form-grid { grid-template-columns:1fr; }
+  .marketplace-review-toolbar,.marketplace-comparison-grid { grid-template-columns:1fr; }
   .marketplace-job-card,.marketplace-proposal-box,.marketplace-offers-panel,.marketplace-service-owner { padding:15px; }
   .marketplace-job-bottom { align-items:flex-start; flex-direction:column; }
   .marketplace-catalog-toolbar>span { margin-left:0; }

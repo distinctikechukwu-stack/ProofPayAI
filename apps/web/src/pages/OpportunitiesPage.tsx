@@ -12,7 +12,7 @@ type Job = {
   fixedBudgetMinor: string | null; hourlyRateMinMinor: string | null; hourlyRateMaxMinor: string | null; currency: string;
   estimatedDays: number | null; status: "draft" | "published" | "closed" | "archived"; isFavorite?: boolean; createdAt: string;
 };
-type Proposal = {
+export type Proposal = {
   id: string; jobId: string; isMine: boolean; coverLetter: string; quoteMinor: string; currency: string;
   timelineDays: number; portfolioItemIds: string[]; status: string; createdAt: string;
 };
@@ -61,6 +61,77 @@ function jobBudget(job: Job) {
   return job.projectType === "fixed"
     ? `${displayMinor(job.fixedBudgetMinor, job.currency)} fixed price`
     : `${displayMinor(job.hourlyRateMinMinor, job.currency)}–${displayMinor(job.hourlyRateMaxMinor, job.currency)} / hour`;
+}
+
+type ProposalSort = "recent" | "quote_low" | "quote_high" | "timeline";
+const maxComparedProposals = 4;
+
+function proposalStatus(proposal: Proposal): string {
+  const status = (proposal as Partial<Proposal>).status;
+  return typeof status === "string" && status.trim() ? status : "unknown";
+}
+
+function proposalAmount(proposal: Proposal): string {
+  const fields = proposal as Partial<Proposal>;
+  if (typeof fields.quoteMinor !== "string" || !/^\d+$/.test(fields.quoteMinor)) return "Quote not provided";
+  if (typeof fields.currency !== "string" || !/^[A-Z]{3}$/.test(fields.currency)) return "Quote currency not provided";
+  return `${displayMinor(fields.quoteMinor, fields.currency)} ${fields.currency}`;
+}
+
+function proposalTimeline(proposal: Proposal): string {
+  const days = (proposal as Partial<Proposal>).timelineDays;
+  return typeof days === "number" && Number.isSafeInteger(days) && days > 0 ? `${days} days` : "Timeline not provided";
+}
+
+function proposalCoverLetter(proposal: Proposal): string {
+  const letter = (proposal as Partial<Proposal>).coverLetter;
+  return typeof letter === "string" && letter.trim() ? letter : "No cover letter provided.";
+}
+
+function proposalPortfolioCount(proposal: Proposal): number {
+  const references = (proposal as Partial<Proposal>).portfolioItemIds;
+  return Array.isArray(references) ? references.length : 0;
+}
+
+function proposalQuoteSortValue(proposal: Proposal): { currency: string; amount: bigint } | null {
+  const fields = proposal as Partial<Proposal>;
+  if (typeof fields.quoteMinor !== "string" || !/^\d+$/.test(fields.quoteMinor)
+    || typeof fields.currency !== "string" || !/^[A-Z]{3}$/.test(fields.currency)) return null;
+  return { currency: fields.currency, amount: BigInt(fields.quoteMinor) };
+}
+
+function proposalTimelineSortValue(proposal: Proposal): number | null {
+  const value = (proposal as Partial<Proposal>).timelineDays;
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+function compareMissingLast<T>(left: T | null, right: T | null, compare: (a: T, b: T) => number): number {
+  if (left === null) return right === null ? 0 : 1;
+  if (right === null) return -1;
+  return compare(left, right);
+}
+
+function sortProposals(items: Proposal[], sort: ProposalSort): Proposal[] {
+  return [...items].sort((left, right) => {
+    if (sort === "quote_low" || sort === "quote_high") {
+      const a = proposalQuoteSortValue(left);
+      const b = proposalQuoteSortValue(right);
+      const comparison = compareMissingLast(a, b, (first, second) => first.currency.localeCompare(second.currency)
+        || (first.amount < second.amount ? -1 : first.amount > second.amount ? 1 : 0));
+      if (comparison !== 0 || !a || !b) return comparison;
+      if (sort === "quote_high" && a.currency === b.currency) return a.amount > b.amount ? -1 : a.amount < b.amount ? 1 : 0;
+      return comparison;
+    }
+    if (sort === "timeline") {
+      const comparison = compareMissingLast(proposalTimelineSortValue(left), proposalTimelineSortValue(right), (a, b) => a - b);
+      if (comparison !== 0) return comparison;
+    }
+    const leftDate = Date.parse((left as Partial<Proposal>).createdAt ?? "");
+    const rightDate = Date.parse((right as Partial<Proposal>).createdAt ?? "");
+    if (!Number.isFinite(leftDate)) return Number.isFinite(rightDate) ? 1 : 0;
+    if (!Number.isFinite(rightDate)) return -1;
+    return rightDate - leftDate;
+  });
 }
 
 export function OpportunitiesPage() {
@@ -180,11 +251,12 @@ export function OpportunitiesPage() {
   };
 
   const submitOffer = async (proposal: Proposal, input: { terms: string; amount: string; timeline: string; key: string }) => {
-    const amount = amountMinor(input.amount, selectedJob?.currency ?? proposal.currency);
+    const currency = selectedJob?.currency ?? proposal.currency;
+    const amount = amountMinor(input.amount, currency);
     if (amount === null || !Number.isSafeInteger(Number(input.timeline)) || Number(input.timeline) < 1) throw new Error("Enter a positive exact offer amount and delivery timeline.");
     await apiRequest(`/api/proposals/${proposal.id}/offers`, { method: "POST", body: {
       idempotencyKey: input.key, terms: input.terms, amountMinor: amount,
-      currency: selectedJob?.currency ?? proposal.currency, timelineDays: Number(input.timeline),
+      currency, timelineDays: Number(input.timeline),
     } });
     setNotice("Offer sent. The freelancer must explicitly accept or decline it.");
     refresh();
@@ -308,7 +380,8 @@ function JobDetail({
   onReport: (reason: string, details: string) => Promise<void>; onEdit: () => void;
 }) {
   const owner = job.isOwner === true;
-  const ownProposal = proposals.find((proposal) => proposal.isMine);
+  const proposalsForJob = proposals.filter((proposal) => proposal.jobId === job.id);
+  const ownProposal = proposalsForJob.find((proposal) => proposal.isMine);
   const [coverLetter, setCoverLetter] = useState(ownProposal?.coverLetter ?? "");
   const [quote, setQuote] = useState(ownProposal ? minorToText(ownProposal.quoteMinor, job.currency) : "");
   const [timeline, setTimeline] = useState(ownProposal ? String(ownProposal.timelineDays) : "14");
@@ -317,8 +390,6 @@ function JobDetail({
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState("suspicious");
   const [reportDetails, setReportDetails] = useState("");
-  const [offerForm, setOfferForm] = useState<Record<string, { terms: string; amount: string; timeline: string; key: string }>>({});
-  const offerKeys = useRef(new Map<string, string>());
   const relevantOffers = offers;
   const canEditProposal = job.status === "published" && (!ownProposal || ownProposal.status === "draft");
   const showProposal = !owner && isFreelancer && (job.status === "published" || Boolean(ownProposal));
@@ -337,16 +408,6 @@ function JobDetail({
       setMessage(submit ? "Proposal submitted to the client." : "Proposal draft saved.");
     } catch (reason) { setMessage(reason instanceof Error ? reason.message : "Proposal could not be saved."); }
   };
-  const initialOffer = (proposal: Proposal) => {
-    const existing = offerForm[proposal.id];
-    if (existing) return existing;
-    let key = offerKeys.current.get(proposal.id);
-    if (!key) { key = crypto.randomUUID(); offerKeys.current.set(proposal.id, key); }
-    return { terms: "", amount: minorToText(proposal.quoteMinor, proposal.currency), timeline: String(proposal.timelineDays), key };
-  };
-  const patchOffer = (proposal: Proposal, field: "terms" | "amount" | "timeline", value: string) => setOfferForm((current) => ({
-    ...current, [proposal.id]: { ...initialOffer(proposal), [field]: value },
-  }));
   return <>
     <article className="marketplace-detail-card">
       <div className="marketplace-detail-top"><div><span className="marketplace-category">{job.category} · {job.experienceLevel}</span><h1>{job.title}</h1><p>{job.summary}</p></div><strong className="marketplace-budget">{jobBudget(job)}</strong></div>
@@ -364,18 +425,104 @@ function JobDetail({
           {message && <p role="status" className="marketplace-inline-note">{message}</p>}
         </form> : <div className="marketplace-submitted-proposal"><p>{ownProposal?.coverLetter ?? "Your draft is saved, but this job is no longer open for new proposals."}</p>{ownProposal && <div className="marketplace-detail-meta"><strong>{displayMinor(ownProposal.quoteMinor, ownProposal.currency)}</strong><span>{ownProposal.timelineDays} day estimate</span><span>{ownProposal.portfolioItemIds.length} portfolio reference(s)</span></div>}{ownProposal && ["submitted", "shortlisted", "interview_invited"].includes(ownProposal.status) && <button className="marketplace-text-action" type="button" onClick={() => onTransition(ownProposal.id, "withdraw")}>Withdraw proposal</button>}{ownProposal?.status === "withdrawn" && <p className="marketplace-inline-note">This application was withdrawn. The one-application-per-job rule prevents a duplicate application.</p>}</div>}
       </section>}
-      {owner && <section className="marketplace-proposal-box"><div className="marketplace-section-heading"><div><span className="eyebrow">APPLICANTS</span><h2>Proposal review</h2></div><span>{proposals.length} applicant{proposals.length === 1 ? "" : "s"}</span></div>{proposals.length ? <div className="marketplace-applicant-list">{proposals.map((proposal) => <article className="marketplace-applicant-card" key={proposal.id}>
-        <div className="marketplace-applicant-top"><span className="marketplace-avatar-small" aria-hidden="true">F</span><div><strong>Freelancer applicant</strong><small>{displayMinor(proposal.quoteMinor, proposal.currency)} · {proposal.timelineDays} days</small></div><StatusPill status={proposal.status} /></div>
-        <p>{proposal.coverLetter}</p>
-        {proposal.portfolioItemIds.length > 0 && <span className="marketplace-inline-note">{proposal.portfolioItemIds.length} portfolio reference(s) attached.</span>}
-        {isClient && ["submitted", "shortlisted", "interview_invited"].includes(proposal.status) && <div className="marketplace-form-actions"><button className="button-secondary" type="button" onClick={() => onTransition(proposal.id, "shortlist")}>Shortlist</button><button className="button-secondary" type="button" onClick={() => onTransition(proposal.id, "invite_interview")}>Mark interview requested</button><button className="marketplace-text-action" type="button" onClick={() => onTransition(proposal.id, "reject")}>Reject</button></div>}
-        {isClient && ["submitted", "shortlisted", "interview_invited"].includes(proposal.status) && <OfferComposer value={initialOffer(proposal)} onChange={(field, value) => patchOffer(proposal, field, value)} onSubmit={() => void onOffer(proposal, initialOffer(proposal)).catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : "Offer could not be sent."))} />}
-      </article>)}</div> : <p className="marketplace-empty-inline">No proposals are available for this job.</p>}</section>}
+      <ProposalReviewPanel key={job.id} jobId={job.id} jobCurrency={job.currency} proposals={proposalsForJob}
+        clientCanReview={owner && isClient} onTransition={onTransition} onOffer={onOffer} />
       {!owner && isFreelancer && job.status === "published" && <button className="marketplace-text-action marketplace-report-toggle" type="button" onClick={() => setReportOpen(!reportOpen)}><Flag size={13} /> Report a suspicious listing</button>}
       {reportOpen && <form className="marketplace-report-form" onSubmit={(event) => { event.preventDefault(); void onReport(reportReason, reportDetails).then(() => { setReportOpen(false); setMessage("Thank you. The report was recorded for administrator review."); }).catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : "The report could not be sent.")); }}><label>Reason<select value={reportReason} onChange={(event) => setReportReason(event.target.value)}><option value="suspicious">Suspicious activity</option><option value="misleading">Misleading listing</option><option value="prohibited">Prohibited work</option><option value="other">Other</option></select></label><label>Details<textarea maxLength={2000} rows={3} value={reportDetails} onChange={(event) => setReportDetails(event.target.value)} /></label><button className="button-secondary">Send private report</button>{message && <span role="status">{message}</span>}</form>}
     </article>
     {relevantOffers.length > 0 && <section className="marketplace-offers-panel"><div className="marketplace-section-heading"><div><span className="eyebrow">JOB OFFERS</span><h2>Offer decisions</h2></div></div>{relevantOffers.map((offer) => <OfferRow key={offer.id} offer={offer} onRespond={onRespondOffer} />)}</section>}
   </>;
+}
+
+export function ProposalReviewPanel({
+  jobId, jobCurrency, proposals, clientCanReview, onTransition, onOffer,
+}: {
+  jobId: string; jobCurrency: string; proposals: Proposal[]; clientCanReview: boolean;
+  onTransition: (proposalId: string, action: "submit" | "withdraw" | "shortlist" | "reject" | "invite_interview") => void;
+  onOffer: (proposal: Proposal, input: { terms: string; amount: string; timeline: string; key: string }) => Promise<void>;
+}) {
+  const [sort, setSort] = useState<ProposalSort>("recent");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [offerForm, setOfferForm] = useState<Record<string, { terms: string; amount: string; timeline: string; key: string }>>({});
+  const offerKeys = useRef(new Map<string, string>());
+  const [message, setMessage] = useState("");
+  const jobProposals = proposals.filter((proposal) => proposal.jobId === jobId);
+  const proposalIds = new Set(jobProposals.map((proposal) => proposal.id));
+  const activeSelectedIds = selectedIds.filter((id) => proposalIds.has(id));
+  const visibleProposals = sortProposals(jobProposals.filter((proposal) => statusFilter === "all" || proposalStatus(proposal) === statusFilter), sort);
+  const selectedProposals = activeSelectedIds.map((id) => jobProposals.find((proposal) => proposal.id === id)).filter((proposal): proposal is Proposal => Boolean(proposal));
+  const maxReached = selectedProposals.length >= maxComparedProposals;
+  const initialOffer = (proposal: Proposal) => {
+    const existing = offerForm[proposal.id];
+    if (existing) return existing;
+    let key = offerKeys.current.get(proposal.id);
+    if (!key) { key = crypto.randomUUID(); offerKeys.current.set(proposal.id, key); }
+    const fields = proposal as Partial<Proposal>;
+    const currency = typeof fields.currency === "string" ? fields.currency : jobCurrency;
+    const quoteMinor = typeof fields.quoteMinor === "string" ? fields.quoteMinor : "";
+    const timelineDays = typeof fields.timelineDays === "number" ? String(fields.timelineDays) : "";
+    return { terms: "", amount: minorToText(quoteMinor, currency), timeline: timelineDays, key };
+  };
+  const patchOffer = (proposal: Proposal, field: "terms" | "amount" | "timeline", value: string) => setOfferForm((current) => ({
+    ...current, [proposal.id]: { ...initialOffer(proposal), [field]: value },
+  }));
+  const selectProposal = (proposal: Proposal, checked: boolean) => {
+    if (!clientCanReview || proposal.jobId !== jobId || !proposalIds.has(proposal.id)) return;
+    setSelectedIds((current) => {
+      const active = current.filter((id) => proposalIds.has(id));
+      if (!checked) return active.filter((id) => id !== proposal.id);
+      if (active.includes(proposal.id) || active.length >= maxComparedProposals) return active;
+      return [...active, proposal.id];
+    });
+  };
+  const removeFromComparison = (proposalId: string) => setSelectedIds((current) => current.filter((id) => id !== proposalId));
+
+  if (!clientCanReview) return null;
+  return <section className="marketplace-proposal-box" aria-labelledby="proposal-review-heading">
+    <div className="marketplace-section-heading"><div><span className="eyebrow">APPLICANTS</span><h2 id="proposal-review-heading">Proposal review</h2><p>Compare proposals for this job, then use the existing review and offer actions on each application.</p></div><span>{jobProposals.length} applicant{jobProposals.length === 1 ? "" : "s"}</span></div>
+    {jobProposals.length ? <>
+      <div className="marketplace-review-toolbar">
+        <label>Filter by status<select aria-label="Filter proposals by status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="shortlisted">Shortlisted</option><option value="interview_invited">Interview requested</option><option value="rejected">Rejected</option><option value="withdrawn">Withdrawn</option><option value="accepted">Accepted</option></select></label>
+        <label>Sort proposals<select aria-label="Sort proposals" value={sort} onChange={(event) => setSort(event.target.value as ProposalSort)}><option value="recent">Newest first</option><option value="quote_low">Quote: low to high by currency</option><option value="quote_high">Quote: high to low by currency</option><option value="timeline">Shortest timeline</option></select></label>
+        <p aria-live="polite">{selectedProposals.length} of {maxComparedProposals} selected for comparison</p>
+        {selectedProposals.length > 0 && <button className="marketplace-text-action" type="button" onClick={() => setSelectedIds([])}>Clear comparison selection</button>}
+      </div>
+      {visibleProposals.length ? <div className="marketplace-applicant-list" role="list" aria-label="Proposals for this job">{visibleProposals.map((proposal, index) => {
+        const status = proposalStatus(proposal);
+        const count = proposalPortfolioCount(proposal);
+        const selected = activeSelectedIds.includes(proposal.id);
+        const offerable = ["submitted", "shortlisted", "interview_invited"].includes(status);
+        return <article className="marketplace-applicant-card" role="listitem" key={proposal.id}>
+          <div className="marketplace-proposal-select-row"><label><input type="checkbox" aria-label={`Select proposal ${index + 1} for comparison`} checked={selected} disabled={!selected && maxReached} onChange={(event) => selectProposal(proposal, event.target.checked)} /> Add to comparison</label></div>
+          <div className="marketplace-applicant-top"><span className="marketplace-avatar-small" aria-hidden="true">F</span><div><strong>Freelancer applicant</strong><small>{proposalAmount(proposal)} · {proposalTimeline(proposal)}</small></div><StatusPill status={status} /></div>
+          <p>{proposalCoverLetter(proposal)}</p>
+          <span className="marketplace-inline-note">{count ? `${count} portfolio reference(s) attached. Titles and details are not available in this view.` : "No portfolio references attached."}</span>
+          {offerable && <div className="marketplace-form-actions"><button className="button-secondary" type="button" onClick={() => onTransition(proposal.id, "shortlist")}>Shortlist</button><button className="button-secondary" type="button" onClick={() => onTransition(proposal.id, "invite_interview")}>Mark interview requested</button><button className="marketplace-text-action" type="button" onClick={() => onTransition(proposal.id, "reject")}>Reject</button></div>}
+          {offerable && <OfferComposer value={initialOffer(proposal)} onChange={(field, value) => patchOffer(proposal, field, value)} onSubmit={() => void onOffer(proposal, initialOffer(proposal)).catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : "Offer could not be sent."))} />}
+          {message && <p role="status" className="marketplace-inline-note">{message}</p>}
+        </article>;
+      })}</div> : <p className="marketplace-empty-inline">No proposals match this status filter.</p>}
+    </> : <p className="marketplace-empty-inline">No proposals are available for this job.</p>}
+    {selectedProposals.length === 1 && <p className="marketplace-inline-note">Select one more proposal to open the side-by-side comparison.</p>}
+    {selectedProposals.length > 1 && <section className="marketplace-comparison-panel" aria-labelledby="proposal-comparison-heading">
+      <div className="marketplace-section-heading"><div><span className="eyebrow">READ-ONLY VIEW</span><h3 id="proposal-comparison-heading">Side-by-side comparison</h3><p>Review submitted terms alongside each other. Hiring decisions remain in the proposal actions above.</p></div></div>
+      <div className="marketplace-comparison-grid" role="list" aria-label="Selected proposals for comparison">{selectedProposals.map((proposal, index) => {
+        const status = proposalStatus(proposal);
+        const count = proposalPortfolioCount(proposal);
+        return <article className="marketplace-comparison-card" role="listitem" key={proposal.id}>
+          <header><strong>Selected proposal {index + 1}</strong><StatusPill status={status} /><button className="marketplace-text-action" type="button" aria-label={`Remove selected proposal ${index + 1}`} onClick={() => removeFromComparison(proposal.id)}>Remove</button></header>
+          <dl>
+            <div><dt>Quoted amount</dt><dd>{proposalAmount(proposal)}</dd></div>
+            <div><dt>Delivery timeline</dt><dd>{proposalTimeline(proposal)}</dd></div>
+            <div><dt>Proposal status</dt><dd>{status.replaceAll("_", " ") || "Status not provided"}</dd></div>
+            <div><dt>Cover letter</dt><dd className="marketplace-comparison-letter">{proposalCoverLetter(proposal)}</dd></div>
+            <div><dt>Portfolio references</dt><dd>{count ? `${count} attached; titles and details are not available in this view.` : "No portfolio references attached."}</dd></div>
+          </dl>
+        </article>;
+      })}</div>
+    </section>}
+  </section>;
 }
 
 function OfferComposer({ value, onChange, onSubmit }: { value: { terms: string; amount: string; timeline: string; key: string }; onChange: (field: "terms" | "amount" | "timeline", value: string) => void; onSubmit: () => void }) {

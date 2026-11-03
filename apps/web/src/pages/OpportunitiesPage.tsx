@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { ArrowLeft, ArrowUpRight, Bookmark, BriefcaseBusiness, Check, CircleAlert, Flag, Plus, Search, Send, X } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Bookmark, BriefcaseBusiness, Check, CircleAlert, Flag, Plus, Printer, Search, Send, X } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ActiveJobFilterChips, type ActiveJobFilterId } from "../components/ActiveJobFilterChips";
 import { FreelancerProposalReview } from "../components/FreelancerProposalReview";
+import { ProposalComparisonPrintDocument, type PrintableProposalSummary } from "../components/ProposalComparisonPrintDocument";
 import { PageHeading, StatusPill } from "../components/WorkspacePrimitives";
 import { SavedJobSearchPresets, type JobSearchFilters } from "../components/SavedJobSearchPresets";
 import { useAuth } from "../contexts/AuthContext";
@@ -87,13 +88,24 @@ function proposalTimeline(proposal: Proposal): string {
 }
 
 function proposalCoverLetter(proposal: Proposal): string {
-  const letter = (proposal as Partial<Proposal>).coverLetter;
-  return typeof letter === "string" && letter.trim() ? letter : "No cover letter provided.";
+  return proposalCoverLetterValue(proposal) || "No cover letter provided.";
 }
 
-function proposalPortfolioCount(proposal: Proposal): number {
+function proposalCoverLetterValue(proposal: Proposal): string | null {
+  const letter = (proposal as Partial<Proposal>).coverLetter;
+  return typeof letter === "string" && letter.trim() ? letter.trim() : null;
+}
+
+function proposalPortfolioSummary(proposal: Proposal): string {
   const references = (proposal as Partial<Proposal>).portfolioItemIds;
-  return Array.isArray(references) ? references.length : 0;
+  if (!Array.isArray(references)) return "Portfolio reference information not provided.";
+  if (references.length === 0) return "No portfolio references attached.";
+  return `${references.length} attached; titles and links are not available in this view.`;
+}
+
+function proposalStatusLabel(proposal: Proposal): string {
+  const status = proposalStatus(proposal);
+  return status === "unknown" ? "Status not provided" : status.replaceAll("_", " ");
 }
 
 function proposalQuoteSortValue(proposal: Proposal): { currency: string; amount: bigint } | null {
@@ -506,7 +518,7 @@ function JobDetail({
           {message && <p role="status" className="marketplace-inline-note">{message}</p>}
         </form> : <div className="marketplace-submitted-proposal"><p>{ownProposal?.coverLetter ?? "Your draft is saved, but this job is no longer open for new proposals."}</p>{ownProposal && <div className="marketplace-detail-meta"><strong>{displayMinor(ownProposal.quoteMinor, ownProposal.currency)}</strong><span>{ownProposal.timelineDays} day estimate</span><span>{ownProposal.portfolioItemIds.length} portfolio reference(s)</span></div>}{ownProposal && ["submitted", "shortlisted", "interview_invited"].includes(ownProposal.status) && <button className="marketplace-text-action" type="button" onClick={() => onTransition(ownProposal.id, "withdraw")}>Withdraw proposal</button>}{ownProposal?.status === "withdrawn" && <p className="marketplace-inline-note">This application was withdrawn. The one-application-per-job rule prevents a duplicate application.</p>}</div>}
       </section>}
-      <ProposalReviewPanel key={job.id} jobId={job.id} jobCurrency={job.currency} proposals={proposalsForJob}
+      <ProposalReviewPanel key={job.id} jobId={job.id} jobTitle={job.title} jobCurrency={job.currency} proposals={proposalsForJob}
         proposalLoadFailed={proposalLoadFailed} clientCanReview={owner && isClient} onRetry={onRetry}
         onTransition={onTransition} onOffer={onOffer} />
       {!owner && isFreelancer && job.status === "published" && <button className="marketplace-text-action marketplace-report-toggle" type="button" onClick={() => setReportOpen(!reportOpen)}><Flag size={13} /> Report a suspicious listing</button>}
@@ -517,9 +529,9 @@ function JobDetail({
 }
 
 export function ProposalReviewPanel({
-  jobId, jobCurrency, proposals, proposalLoadFailed, clientCanReview, onRetry, onTransition, onOffer,
+  jobId, jobTitle, jobCurrency, proposals, proposalLoadFailed, clientCanReview, onRetry, onTransition, onOffer,
 }: {
-  jobId: string; jobCurrency: string; proposals: Proposal[]; proposalLoadFailed: boolean; clientCanReview: boolean;
+  jobId: string; jobTitle: string; jobCurrency: string; proposals: Proposal[]; proposalLoadFailed: boolean; clientCanReview: boolean;
   onRetry: () => void;
   onTransition: (proposalId: string, action: "submit" | "withdraw" | "shortlist" | "reject" | "invite_interview") => void;
   onOffer: (proposal: Proposal, input: { terms: string; amount: string; timeline: string; key: string }) => Promise<void>;
@@ -535,6 +547,13 @@ export function ProposalReviewPanel({
   const activeSelectedIds = selectedIds.filter((id) => proposalIds.has(id));
   const visibleProposals = sortProposals(jobProposals.filter((proposal) => statusFilter === "all" || proposalStatus(proposal) === statusFilter), sort);
   const selectedProposals = activeSelectedIds.map((id) => jobProposals.find((proposal) => proposal.id === id)).filter((proposal): proposal is Proposal => Boolean(proposal));
+  const printableProposals: PrintableProposalSummary[] = selectedProposals.map((proposal) => ({
+    amount: proposalAmount(proposal),
+    timeline: proposalTimeline(proposal),
+    status: proposalStatusLabel(proposal),
+    coverLetter: proposalCoverLetterValue(proposal),
+    portfolioReferences: proposalPortfolioSummary(proposal),
+  }));
   const maxReached = selectedProposals.length >= maxComparedProposals;
   const initialOffer = (proposal: Proposal) => {
     const existing = offerForm[proposal.id];
@@ -576,14 +595,13 @@ export function ProposalReviewPanel({
       {visibleProposals.length ? <div className="marketplace-applicant-list" role="list" aria-label="Proposals for this job">{visibleProposals.map((proposal) => {
         const proposalNumber = jobProposals.findIndex((item) => item.id === proposal.id) + 1;
         const status = proposalStatus(proposal);
-        const count = proposalPortfolioCount(proposal);
         const selected = activeSelectedIds.includes(proposal.id);
         const offerable = ["submitted", "shortlisted", "interview_invited"].includes(status);
         return <article className="marketplace-applicant-card" role="listitem" key={proposal.id}>
           <div className="marketplace-proposal-select-row"><label><input type="checkbox" aria-label={(selected ? "Remove proposal " : "Select proposal ") + proposalNumber + " for comparison"} checked={selected} disabled={!selected && maxReached} aria-describedby={maxReached && !selected ? "proposal-comparison-limit" : undefined} onChange={(event) => selectProposal(proposal, event.target.checked)} /> {selected ? "Remove from comparison" : "Add to comparison"}</label></div>
           <div className="marketplace-applicant-top"><span className="marketplace-avatar-small" aria-hidden="true">F</span><div><strong>Applicant proposal {proposalNumber}</strong><small>{proposalAmount(proposal)} · {proposalTimeline(proposal)}</small></div><StatusPill status={status} /></div>
           <p>{proposalCoverLetter(proposal)}</p>
-          <span className="marketplace-inline-note">{count ? `${count} portfolio reference(s) attached. Titles and links are not available in this view yet.` : "No portfolio references attached."}</span>
+          <span className="marketplace-inline-note">{proposalPortfolioSummary(proposal)}</span>
           {offerable && <div className="marketplace-form-actions"><button className="button-secondary" type="button" onClick={() => onTransition(proposal.id, "shortlist")}>Shortlist</button><button className="button-secondary" type="button" onClick={() => onTransition(proposal.id, "invite_interview")}>Mark interview requested</button><button className="marketplace-text-action" type="button" onClick={() => onTransition(proposal.id, "reject")}>Reject</button></div>}
           {offerable && <OfferComposer value={initialOffer(proposal)} onChange={(field, value) => patchOffer(proposal, field, value)} onSubmit={() => void onOffer(proposal, initialOffer(proposal)).catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : "Offer could not be sent."))} />}
           {message && <p role="status" className="marketplace-inline-note">{message}</p>}
@@ -595,18 +613,22 @@ export function ProposalReviewPanel({
       <div className="marketplace-section-heading"><div><span className="eyebrow">READ-ONLY VIEW</span><h3 id="proposal-comparison-heading" tabIndex={-1}>Side-by-side comparison</h3><p>Review submitted terms alongside each other. Hiring decisions remain in the proposal actions above.</p></div></div>
       <div className="marketplace-comparison-grid" role="list" aria-label="Selected proposals for comparison">{selectedProposals.map((proposal, index) => {
         const status = proposalStatus(proposal);
-        const count = proposalPortfolioCount(proposal);
         return <article className="marketplace-comparison-card" role="listitem" key={proposal.id}>
           <header><h4>Comparison proposal {index + 1}</h4><StatusPill status={status} /><button className="marketplace-text-action" type="button" aria-label={`Remove selected proposal ${index + 1}`} onClick={() => removeFromComparison(proposal.id)}>Remove</button></header>
           <dl>
             <div><dt>Quoted amount</dt><dd>{proposalAmount(proposal)}</dd></div>
             <div><dt>Delivery timeline</dt><dd>{proposalTimeline(proposal)}</dd></div>
-            <div><dt>Proposal status</dt><dd>{status.replaceAll("_", " ") || "Status not provided"}</dd></div>
+            <div><dt>Proposal status</dt><dd>{proposalStatusLabel(proposal)}</dd></div>
             <div><dt>Cover letter</dt><dd className="marketplace-comparison-letter">{proposalCoverLetter(proposal)}</dd></div>
-            <div><dt>Portfolio references</dt><dd>{count ? `${count} attached; titles and links are not available in this view yet.` : "No portfolio references attached."}</dd></div>
+            <div><dt>Portfolio references</dt><dd>{proposalPortfolioSummary(proposal)}</dd></div>
           </dl>
         </article>;
       })}</div>
+      <div className="marketplace-comparison-print-actions">
+        <p id="proposal-comparison-print-help">Print the selected proposals only. Use your browser dialog to print or save as PDF.</p>
+        <button className="button-secondary" type="button" aria-describedby="proposal-comparison-print-help" onClick={() => window.print()}><Printer size={14} /> Print comparison</button>
+      </div>
+      <ProposalComparisonPrintDocument jobTitle={jobTitle} proposals={printableProposals} />
     </section>}
   </section>;
 }

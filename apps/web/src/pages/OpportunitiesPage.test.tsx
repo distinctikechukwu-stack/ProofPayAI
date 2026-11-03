@@ -105,13 +105,95 @@ describe("client proposal comparison", () => {
     expect(within(comparison).getByText("12 days")).toBeInTheDocument();
     expect(within(comparison).getAllByText("submitted")).toHaveLength(2);
     expect(within(comparison).getByText("I will deliver the requested work with clear review milestones.")).toBeInTheDocument();
-    expect(within(comparison).getAllByText(/1 attached; titles and links are not available in this view yet/i)).toHaveLength(2);
+    expect(within(comparison).getAllByText(/1 attached; titles and links are not available in this view\./i)).toHaveLength(2);
     expect(within(comparison).queryByRole("button", { name: /shortlist/i })).not.toBeInTheDocument();
 
     expect(screen.getAllByRole("button", { name: "Shortlist" })).toHaveLength(3);
     expect(screen.getAllByRole("button", { name: "Mark interview requested" })).toHaveLength(3);
     expect(screen.getAllByRole("button", { name: "Reject" })).toHaveLength(3);
     expect(screen.getAllByRole("button", { name: /send offer/i })).toHaveLength(3);
+  });
+
+  it("prints only selected proposals from this owned job after an explicit action without making API requests", async () => {
+    const user = userEvent.setup();
+    const print = vi.spyOn(window, "print").mockImplementation(() => {});
+    renderMarketplace({ proposals: [
+      makeProposal({ id: "proposal-print-one", coverLetter: "Selected proposal one exact cover letter.", createdAt: "2026-11-03T12:00:00.000Z" }),
+      makeProposal({ id: "proposal-print-two", coverLetter: "Selected proposal two exact cover letter.", createdAt: "2026-11-03T11:00:00.000Z" }),
+      makeProposal({ id: "proposal-print-unselected", coverLetter: "This unselected private application must not print.", createdAt: "2026-11-03T10:00:00.000Z" }),
+      makeProposal({ id: "proposal-print-other-job", jobId: otherJobId, coverLetter: "This other job's private application must not print." }),
+    ] });
+
+    await screen.findByRole("heading", { name: "Proposal review" });
+    expect(screen.queryByRole("button", { name: "Print comparison" })).not.toBeInTheDocument();
+    expect(print).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("checkbox", { name: "Select proposal 1 for comparison" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select proposal 2 for comparison" }));
+
+    const printButton = screen.getByRole("button", { name: "Print comparison" });
+    expect(printButton).toHaveAccessibleDescription("Print the selected proposals only. Use your browser dialog to print or save as PDF.");
+    expect(print).not.toHaveBeenCalled();
+    const apiCallsBeforePrint = mocks.apiRequest.mock.calls.length;
+    const printDocument = document.body.querySelector(".marketplace-comparison-print-document");
+    expect(printDocument).not.toBeNull();
+    expect(printDocument).toHaveAttribute("aria-hidden", "true");
+    expect(printDocument?.querySelectorAll(".marketplace-comparison-print-card")).toHaveLength(2);
+    expect(printDocument).toHaveTextContent("$500.00 USD");
+    expect(printDocument).toHaveTextContent("12 days");
+    expect(printDocument).toHaveTextContent("submitted");
+    expect(printDocument).toHaveTextContent("1 attached; titles and links are not available in this view.");
+    expect(printDocument).toHaveTextContent("Selected proposal one exact cover letter.");
+    expect(printDocument).toHaveTextContent("Selected proposal two exact cover letter.");
+    expect(printDocument).not.toHaveTextContent("This unselected private application must not print.");
+    expect(printDocument).not.toHaveTextContent("This other job's private application must not print.");
+    expect(printDocument).not.toHaveTextContent("proposal-print-one");
+    expect(printDocument?.querySelector("button, a, input, select, textarea")).toBeNull();
+
+    await user.click(printButton);
+    expect(print).toHaveBeenCalledTimes(1);
+    expect(mocks.apiRequest.mock.calls).toHaveLength(apiCallsBeforePrint);
+  });
+
+  it("prints clear labels for incomplete proposal data and distinguishes missing portfolio details", async () => {
+    const user = userEvent.setup();
+    const missing = makeProposal({
+      id: "proposal-print-missing", quoteMinor: undefined as unknown as string, currency: undefined as unknown as string,
+      timelineDays: undefined as unknown as number, status: undefined as unknown as string,
+      coverLetter: "", portfolioItemIds: undefined as unknown as string[],
+    });
+    const noReferences = makeProposal({
+      id: "proposal-print-empty-references", quoteMinor: "30000", currency: "USD", timelineDays: 9,
+      status: "", coverLetter: " ", portfolioItemIds: [],
+    });
+    renderMarketplace({ proposals: [missing, noReferences] });
+    await screen.findByRole("heading", { name: "Proposal review" });
+    await user.click(screen.getByRole("checkbox", { name: "Select proposal 1 for comparison" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select proposal 2 for comparison" }));
+
+    const printDocument = document.body.querySelector(".marketplace-comparison-print-document");
+    expect(printDocument).toHaveTextContent("Quote not provided");
+    expect(printDocument).toHaveTextContent("Timeline not provided");
+    expect(printDocument).toHaveTextContent("Status not provided");
+    expect(printDocument).toHaveTextContent("No cover letter provided.");
+    expect(printDocument).toHaveTextContent("Portfolio reference information not provided.");
+    expect(printDocument).toHaveTextContent("No portfolio references attached.");
+  });
+
+  it("prints only a clearly labeled excerpt when a cover letter is long", async () => {
+    const user = userEvent.setup();
+    const letter = `${"A detailed proposal statement. ".repeat(30)}PRIVATE TAIL SHOULD NOT BE PRINTED`;
+    renderMarketplace({ proposals: [
+      makeProposal({ id: "proposal-long-letter", coverLetter: letter, createdAt: "2026-11-03T12:00:00.000Z" }),
+      makeProposal({ id: "proposal-second-long-letter", coverLetter: "A second selected proposal with its own details." }),
+    ] });
+    await screen.findByRole("heading", { name: "Proposal review" });
+    await user.click(screen.getByRole("checkbox", { name: "Select proposal 1 for comparison" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select proposal 2 for comparison" }));
+
+    const printDocument = document.body.querySelector(".marketplace-comparison-print-document");
+    expect(printDocument).toHaveTextContent("Cover-letter summary");
+    expect(printDocument).toHaveTextContent("Excerpt only. Open the proposal in ProofPay AI to read the full cover letter.");
+    expect(printDocument).not.toHaveTextContent("PRIVATE TAIL SHOULD NOT BE PRINTED");
   });
 
   it("sorts exact quote values and filters the same job's proposals by status", async () => {
@@ -142,7 +224,7 @@ describe("client proposal comparison", () => {
     expect(await screen.findByText(/Quote not provided · Timeline not provided/)).toBeInTheDocument();
     expect(screen.getByText(/Quote not provided · Timeline not provided/)).toBeInTheDocument();
     expect(screen.getByText("No cover letter provided.")).toBeInTheDocument();
-    expect(screen.getByText("No portfolio references attached.")).toBeInTheDocument();
+    expect(screen.getByText("Portfolio reference information not provided.")).toBeInTheDocument();
     await user.click(screen.getByRole("checkbox", { name: "Select proposal 1 for comparison" }));
     await user.click(screen.getByRole("checkbox", { name: "Select proposal 2 for comparison" }));
 
@@ -150,12 +232,16 @@ describe("client proposal comparison", () => {
     expect(within(comparison).getByText("Quote not provided")).toBeInTheDocument();
     expect(within(comparison).getByText("Timeline not provided")).toBeInTheDocument();
     expect(within(comparison).getByText("No cover letter provided.")).toBeInTheDocument();
-    expect(within(comparison).getByText("No portfolio references attached.")).toBeInTheDocument();
+    expect(within(comparison).getByText("Portfolio reference information not provided.")).toBeInTheDocument();
     expect(comparison).toHaveClass("marketplace-comparison-grid");
     expect(marketplaceStyles).toMatch(/@media\s*\(max-width:\s*480px\)[\s\S]*?\.marketplace-review-toolbar,\.marketplace-comparison-grid\s*\{\s*grid-template-columns:\s*1fr;/);
     expect(marketplaceStyles).toMatch(/\.marketplace-review-toolbar select \{\s*min-height:44px; font-size:12px;/);
     expect(marketplaceStyles).toMatch(/\.marketplace-review-toolbar select:focus-visible[\s\S]*outline:3px solid/);
     expect(marketplaceStyles).toMatch(/\.marketplace-proposal-select-row label \{ min-height:44px;/);
+    expect(marketplaceStyles).toContain(".marketplace-comparison-print-document { display:none; }");
+    expect(marketplaceStyles).toMatch(/@media print[\s\S]*?body > :not\(\.marketplace-comparison-print-document\) \{ display:none!important; \}/);
+    expect(marketplaceStyles).toMatch(/break-inside:avoid-page; page-break-inside:avoid;/);
+    expect(marketplaceStyles).toMatch(/@media print and \(orientation:portrait\)[\s\S]*?\.marketplace-comparison-print-grid \{ grid-template-columns:1fr; \}/);
   });
 
   it.each([

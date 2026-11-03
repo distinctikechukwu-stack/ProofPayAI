@@ -29,12 +29,14 @@ test("Blueprint scopes both uniquely named services to ProofPay AI / Staging", (
   assert.equal((blueprint.match(/autoDeployTrigger: ['\"]?off['\"]?/g) ?? []).length, 2);
 });
 
-test("API and durable webhook worker share the paid web service startup", async () => {
+test("API and durable webhook worker share the Free web service startup", async () => {
   const api = serviceSection("proofpay-staging-api", "proofpay-staging-web");
+  const web = serviceSection("proofpay-staging-web");
   const server = await readFile(new URL("../apps/api/src/server.ts", import.meta.url), "utf8");
 
   assert.match(api, /type: web/);
-  assert.match(api, /plan: 0\.5c-512mb/);
+  assert.match(api, /plan: free/);
+  assert.doesNotMatch(api, /plan: 0\.5c-512mb/);
   assert.match(api, /startCommand: npm run start --workspace @proofpay\/api/);
   assert.match(api, /healthCheckPath: \/health/);
   assert.match(api, /APP_ORIGIN/);
@@ -44,6 +46,8 @@ test("API and durable webhook worker share the paid web service startup", async 
   assert.match(server, /await app\.listen/);
   assert.match(server, /webhook queue worker is not configured/);
   assert.doesNotMatch(api, /preDeployCommand|db push|migration.*apply/i);
+  assert.match(web, /runtime: static/);
+  assert.doesNotMatch(web, /^\s+plan:/m);
 });
 
 test("only backend variables hold AI, privileged Supabase, and PayPal Sandbox configuration", () => {

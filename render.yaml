@@ -10,7 +10,7 @@ projects:
             name: proofpay-staging-api
             runtime: node
             branch: codex/proofpay-staging-release
-            plan: 0.5c-512mb
+            plan: free
             autoDeployTrigger: 'off'
             buildCommand: npm ci && npm run build --workspace @proofpay/shared && npm run build --workspace @proofpay/api
             startCommand: npm run start --workspace @proofpay/api

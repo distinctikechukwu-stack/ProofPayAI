@@ -7,6 +7,19 @@ import { OpportunitiesPage, type Proposal } from "./OpportunitiesPage";
 
 const marketplaceStyles = readFileSync("src/styles/marketplace.css", "utf8");
 
+function installLocalStorage() {
+  const entries = new Map<string, string>();
+  const storage: Storage = {
+    get length() { return entries.size; },
+    clear: () => entries.clear(),
+    getItem: (key) => entries.get(String(key)) ?? null,
+    key: (index) => [...entries.keys()][index] ?? null,
+    removeItem: (key) => { entries.delete(String(key)); },
+    setItem: (key, value) => { entries.set(String(key), String(value)); },
+  };
+  Object.defineProperty(window, "localStorage", { configurable: true, value: storage });
+}
+
 const mocks = vi.hoisted(() => ({ apiRequest: vi.fn(), user: { id: "client-test-account" } }));
 
 vi.mock("../contexts/AuthContext", () => ({ useAuth: () => ({ user: mocks.user }) }));
@@ -66,7 +79,7 @@ function renderMarketplace({
 }
 
 describe("client proposal comparison", () => {
-  beforeEach(() => mocks.apiRequest.mockReset());
+  beforeEach(() => { vi.restoreAllMocks(); installLocalStorage(); mocks.apiRequest.mockReset(); mocks.user = { id: "client-test-account" }; });
 
   it("compares selected proposals for the owned job while keeping hiring actions on the review cards", async () => {
     const user = userEvent.setup();
@@ -257,5 +270,75 @@ describe("client proposal comparison", () => {
     renderMarketplace({ proposals: [] });
     expect(await screen.findByText(/No proposals yet\./)).toHaveAttribute("role", "status");
     expect(screen.getByText(/Applicants' submissions will appear here/)).toBeInTheDocument();
+  });
+});
+
+describe("freelancer saved job-search presets", () => {
+  beforeEach(() => { vi.restoreAllMocks(); installLocalStorage(); mocks.apiRequest.mockReset(); mocks.user = { id: "preset-account" }; window.localStorage.clear(); });
+
+  it("applies every saved filter and returns matching favorite jobs in the saved sort order", async () => {
+    const user = userEvent.setup();
+    const filters = {
+      keyword: "React", category: "Development", projectType: "fixed", experience: "intermediate",
+      skill: "TypeScript", budgetMin: "500", budgetMax: "900", budgetCurrency: "USD",
+      sort: "budget_low", savedOnly: true,
+    };
+    const makeJob = (id: string, title: string, amount: string, options: { favorite?: boolean; category?: string; projectType?: string } = {}) => ({
+      id, title, summary: "React project with TypeScript", description: "A persisted listing for testing marketplace filters.",
+      requirements: ["React delivery"], skills: ["React", "TypeScript"], category: options.category ?? "Development",
+      experienceLevel: "intermediate", projectType: options.projectType ?? "fixed", fixedBudgetMinor: amount,
+      hourlyRateMinMinor: null, hourlyRateMaxMinor: null, currency: "USD", estimatedDays: 20,
+      status: "published", isFavorite: options.favorite ?? true, createdAt: "2026-11-01T10:00:00.000Z",
+    });
+    const jobs = [
+      makeJob("expensive", "React Search Expensive", "85000"),
+      makeJob("affordable", "React Search Affordable", "65000"),
+      makeJob("not-saved", "React Search Not Saved", "70000", { favorite: false }),
+      makeJob("wrong-category", "React Search Other Category", "60000", { category: "Design" }),
+      makeJob("wrong-type", "React Search Hourly", "60000", { projectType: "hourly" }),
+      makeJob("over-budget", "React Search Over Budget", "100000"),
+    ];
+    window.localStorage.setItem("proofpay:marketplace:job-search-presets:v1:preset-account", JSON.stringify({
+      version: 1, presets: [{ id: "preset-1", name: "Saved React jobs", filters }],
+    }));
+    mocks.apiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/profile") return { roles: ["freelancer"], portfolio: [] };
+      if (path === "/api/offers") return { offers: [] };
+      if (path === "/api/jobs") return { jobs };
+      throw new Error("Unexpected API request: " + path);
+    });
+
+    const view = render(<MemoryRouter initialEntries={["/app/opportunities"]}>
+      <Routes><Route path="/app/opportunities" element={<OpportunitiesPage />} /></Routes>
+    </MemoryRouter>);
+    await user.click(await screen.findByRole("button", { name: "Apply saved search Saved React jobs" }));
+
+    expect(screen.getByRole("textbox", { name: "Search jobs" })).toHaveValue("React");
+    expect(screen.getByRole("combobox", { name: "Category filter" })).toHaveValue("Development");
+    expect(screen.getByRole("combobox", { name: "Project type filter" })).toHaveValue("fixed");
+    expect(screen.getByRole("combobox", { name: "Experience filter" })).toHaveValue("intermediate");
+    expect(screen.getByRole("textbox", { name: "Skill filter" })).toHaveValue("TypeScript");
+    expect(screen.getByRole("textbox", { name: "Minimum budget" })).toHaveValue("500");
+    expect(screen.getByRole("textbox", { name: "Maximum budget" })).toHaveValue("900");
+    expect(screen.getByRole("textbox", { name: "Budget currency" })).toHaveValue("USD");
+    expect(screen.getByRole("combobox", { name: "Sort jobs" })).toHaveValue("budget_low");
+    expect(screen.getByRole("button", { name: "Saved jobs" })).toHaveAttribute("aria-pressed", "true");
+    const cards = Array.from(view.container.querySelectorAll(".marketplace-job-card h2")).map((heading) => heading.textContent);
+    expect(cards).toEqual(["React Search Affordable", "React Search Expensive"]);
+  });
+
+  it("does not expose saved-search controls to an authenticated client", async () => {
+    mocks.apiRequest.mockImplementation(async (path: string) => {
+      if (path === "/api/profile") return { roles: ["client"], portfolio: [] };
+      if (path === "/api/offers") return { offers: [] };
+      if (path === "/api/jobs") return { jobs: [] };
+      throw new Error("Unexpected API request: " + path);
+    });
+    render(<MemoryRouter initialEntries={["/app/opportunities"]}>
+      <Routes><Route path="/app/opportunities" element={<OpportunitiesPage />} /></Routes>
+    </MemoryRouter>);
+
+    expect(await screen.findByText(/no marketplace jobs yet/i)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Saved job searches" })).not.toBeInTheDocument();
   });
 });

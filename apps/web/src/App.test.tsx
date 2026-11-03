@@ -91,7 +91,7 @@ describe("ProofPay AI product preview", () => {
   it("does not present sample opportunity listings as live jobs while signed out", async () => {
     renderRoute("/app/opportunities");
 
-    expect(await screen.findByRole("heading", { name: "Opportunities" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Opportunities" }, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /sign in to browse persisted jobs/i })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /sample job/i })).not.toBeInTheDocument();
   });

@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { ArrowLeft, ArrowUpRight, Bookmark, BriefcaseBusiness, Check, CircleAlert, Flag, Plus, Search, Send, X } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { PageHeading, StatusPill } from "../components/WorkspacePrimitives";
+import { SavedJobSearchPresets, type JobSearchFilters } from "../components/SavedJobSearchPresets";
 import { useAuth } from "../contexts/AuthContext";
 import { apiRequest } from "../lib/api";
 
@@ -143,6 +144,7 @@ export function OpportunitiesPage() {
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [offers, setOffers] = useState<Offer[]>([]);
   const [roles, setRoles] = useState<string[]>([]);
+  const [rolesUserId, setRolesUserId] = useState<string | null>(null);
   const [portfolio, setPortfolio] = useState<PortfolioRef[]>([]);
   const [loading, setLoading] = useState(true);
   const [proposalLoadFailed, setProposalLoadFailed] = useState(false);
@@ -161,8 +163,9 @@ export function OpportunitiesPage() {
   const [showJobEditor, setShowJobEditor] = useState(false);
   const [editingJob, setEditingJob] = useState<Job | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const isFreelancer = roles.includes("freelancer");
-  const isClient = roles.includes("client");
+  const isCurrentUserProfile = Boolean(user && rolesUserId === user.id);
+  const isFreelancer = isCurrentUserProfile && roles.includes("freelancer");
+  const isClient = isCurrentUserProfile && roles.includes("client");
 
   useEffect(() => {
     if (!user) {
@@ -172,6 +175,7 @@ export function OpportunitiesPage() {
       setOffers([]);
       setPortfolio([]);
       setRoles([]);
+      setRolesUserId(null);
       return;
     }
     let active = true;
@@ -181,7 +185,7 @@ export function OpportunitiesPage() {
     setProposalLoadFailed(false);
     const work: Array<Promise<unknown>> = [
       apiRequest<{ roles: string[]; portfolio?: PortfolioRef[] }>("/api/profile").then((profile) => {
-        if (active) { setRoles(profile.roles); setPortfolio(profile.portfolio ?? []); }
+        if (active) { setRoles(profile.roles); setPortfolio(profile.portfolio ?? []); setRolesUserId(user.id); }
       }),
       apiRequest<{ offers: Offer[] }>("/api/offers").then((response) => { if (active) setOffers(response.offers); }),
     ];
@@ -218,6 +222,19 @@ export function OpportunitiesPage() {
     const result = leftAmount < rightAmount ? -1 : leftAmount > rightAmount ? 1 : 0;
     return sort === "budget_low" ? result : -result;
   }), [budgetCurrency, budgetMax, budgetMin, category, experience, jobs, projectType, savedOnly, search, skill, sort]);
+
+  const applySavedSearch = (filters: JobSearchFilters) => {
+    setSearch(filters.keyword);
+    setCategory(filters.category);
+    setProjectType(filters.projectType);
+    setExperience(filters.experience);
+    setSkill(filters.skill);
+    setBudgetMin(filters.budgetMin);
+    setBudgetMax(filters.budgetMax);
+    setBudgetCurrency(filters.budgetCurrency);
+    setSort(filters.sort);
+    setSavedOnly(filters.savedOnly);
+  };
 
   const refresh = () => setRefreshKey((current) => current + 1);
   const toggleFavorite = async (job: Job) => {
@@ -324,7 +341,7 @@ export function OpportunitiesPage() {
       {isClient && <div className="marketplace-role-note"><strong>Client account</strong><span>Post and manage a job listing. Review applicants and send offers from the job details.</span></div>}
       <section className="marketplace-toolbar">
         <label className="marketplace-search"><Search size={16} /><input aria-label="Search jobs" placeholder="Search roles, skills, or requirements" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
-        <select aria-label="Category filter" value={category} onChange={(event) => setCategory(event.target.value)}><option value="">All categories</option>{[...new Set(jobs.map((job) => job.category))].sort().map((item) => <option key={item}>{item}</option>)}</select>
+        <select aria-label="Category filter" value={category} onChange={(event) => setCategory(event.target.value)}><option value="">All categories</option>{category && !jobs.some((job) => job.category === category) && <option value={category}>Previously saved: {category}</option>}{[...new Set(jobs.map((job) => job.category))].sort().map((item) => <option key={item}>{item}</option>)}</select>
         <select aria-label="Project type filter" value={projectType} onChange={(event) => setProjectType(event.target.value)}><option value="">Fixed or hourly</option><option value="fixed">Fixed price</option><option value="hourly">Hourly</option></select>
         <select aria-label="Experience filter" value={experience} onChange={(event) => setExperience(event.target.value)}><option value="">Any experience</option><option value="entry">Entry level</option><option value="intermediate">Intermediate</option><option value="expert">Expert</option></select>
         <input aria-label="Skill filter" value={skill} onChange={(event) => setSkill(event.target.value)} placeholder="Skill" />
@@ -332,6 +349,7 @@ export function OpportunitiesPage() {
         <select aria-label="Sort jobs" value={sort} onChange={(event) => setSort(event.target.value)}><option value="recent">Most recent</option><option value="budget_low">Budget: low to high</option><option value="budget_high">Budget: high to low</option></select>
         {isFreelancer && <button className={`marketplace-filter-chip${savedOnly ? " selected" : ""}`} type="button" aria-pressed={savedOnly} onClick={() => setSavedOnly(!savedOnly)}><Bookmark size={13} /> Saved jobs</button>}
       </section>
+      {isFreelancer && user?.id && <SavedJobSearchPresets key={user.id} userId={user.id} filters={{ keyword: search, category, projectType: projectType as JobSearchFilters["projectType"], experience: experience as JobSearchFilters["experience"], skill, budgetMin, budgetMax, budgetCurrency, sort: sort as JobSearchFilters["sort"], savedOnly }} onApply={applySavedSearch} />}
       {loading ? <div className="marketplace-empty" role="status">Loading marketplace listings…</div> : filteredJobs.length ? <div className="marketplace-job-list">{filteredJobs.map((job) => <article className="marketplace-job-card" key={job.id}>
         <div className="marketplace-job-top"><div><span className="marketplace-category">{job.category} · {job.experienceLevel}</span><h2><Link to={`/app/opportunities/${job.id}`}>{job.title}<ArrowUpRight size={14} /></Link></h2><p>{job.summary}</p></div><strong className="marketplace-budget">{jobBudget(job)}</strong></div>
         <div className="marketplace-job-tags">{job.skills.slice(0, 5).map((skill) => <span key={skill}>{skill}</span>)}</div>

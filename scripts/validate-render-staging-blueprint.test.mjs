@@ -38,6 +38,7 @@ test("API and durable webhook worker share the Free web service startup", async 
   assert.match(api, /type: web/);
   assert.match(api, /plan: free/);
   assert.doesNotMatch(api, /plan: 0\.5c-512mb/);
+  assert.match(api, /buildCommand: npm ci --include=dev && npm run build --workspace @proofpay\/shared && npm run build --workspace @proofpay\/api/);
   assert.match(api, /startCommand: npm run start --workspace @proofpay\/api/);
   assert.match(api, /healthCheckPath: \/health/);
   assert.doesNotMatch(api, /key: APP_ORIGIN/);
@@ -50,6 +51,7 @@ test("API and durable webhook worker share the Free web service startup", async 
   assert.doesNotMatch(api, /preDeployCommand|db push|migration.*apply/i);
   assert.match(web, /runtime: static/);
   assert.doesNotMatch(web, /^\s+plan:/m);
+  assert.match(web, /buildCommand: npm ci --include=dev && npm run build --workspace @proofpay\/shared && npm run build --workspace @proofpay\/web/);
 });
 
 test("only backend variables hold AI, privileged Supabase, and PayPal Sandbox configuration", () => {

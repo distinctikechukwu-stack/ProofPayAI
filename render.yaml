@@ -12,7 +12,7 @@ projects:
             branch: codex/proofpay-staging-release
             plan: free
             autoDeployTrigger: 'off'
-            buildCommand: npm ci && npm run build --workspace @proofpay/shared && npm run build --workspace @proofpay/api
+            buildCommand: npm ci --include=dev && npm run build --workspace @proofpay/shared && npm run build --workspace @proofpay/api
             startCommand: npm run start --workspace @proofpay/api
             healthCheckPath: /health
             envVars:
@@ -42,7 +42,7 @@ projects:
             runtime: static
             branch: codex/proofpay-staging-release
             autoDeployTrigger: 'off'
-            buildCommand: npm ci && npm run build --workspace @proofpay/shared && npm run build --workspace @proofpay/web
+            buildCommand: npm ci --include=dev && npm run build --workspace @proofpay/shared && npm run build --workspace @proofpay/web
             staticPublishPath: apps/web/dist
             routes:
               - type: rewrite

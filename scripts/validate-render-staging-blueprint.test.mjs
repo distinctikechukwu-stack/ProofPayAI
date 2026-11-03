@@ -19,7 +19,7 @@ test("Blueprint scopes both uniquely named services to ProofPay AI / Staging", (
   assert.match(blueprint, /name: proofpay-staging-api/);
   assert.match(blueprint, /name: proofpay-staging-web/);
   assert.deepEqual(
-    [...blueprint.matchAll(/^[ \t]*(?:-[ \t]+)?name:[ \t]*(.+)$/gm)].map((match) => match[1]),
+    [...blueprint.matchAll(/^[ \t]{2,12}(?:-[ \t]+)?name:[ \t]*(.+)$/gm)].map((match) => match[1]),
     ["ProofPay AI", "Staging", "proofpay-staging-api", "proofpay-staging-web"],
     "the Blueprint must define only the approved project, environment, and two services",
   );
@@ -33,13 +33,15 @@ test("API and durable webhook worker share the Free web service startup", async 
   const api = serviceSection("proofpay-staging-api", "proofpay-staging-web");
   const web = serviceSection("proofpay-staging-web");
   const server = await readFile(new URL("../apps/api/src/server.ts", import.meta.url), "utf8");
+  const app = await readFile(new URL("../apps/api/src/app.ts", import.meta.url), "utf8");
 
   assert.match(api, /type: web/);
   assert.match(api, /plan: free/);
   assert.doesNotMatch(api, /plan: 0\.5c-512mb/);
   assert.match(api, /startCommand: npm run start --workspace @proofpay\/api/);
   assert.match(api, /healthCheckPath: \/health/);
-  assert.match(api, /APP_ORIGIN/);
+  assert.doesNotMatch(api, /key: APP_ORIGIN/);
+  assert.match(app, /process\.env\.APP_ORIGIN \?\? "http:\/\/localhost:5173"/);
   assert.match(server, /createPaypalWebhookWorkerFromEnvironment/);
   assert.match(server, /webhookWorker\?\.start\(\)/);
   assert.match(server, /if \(webhookWorker\)/);
@@ -58,8 +60,6 @@ test("only backend variables hold AI, privileged Supabase, and PayPal Sandbox co
     "AI_PROVIDER",
     "GROQ_API_KEY",
     "GROQ_MODEL",
-    "OPENAI_API_KEY",
-    "OPENAI_MODEL",
     "SUPABASE_URL",
     "SUPABASE_ANON_KEY",
     "SUPABASE_SERVICE_ROLE_KEY",
@@ -71,12 +71,17 @@ test("only backend variables hold AI, privileged Supabase, and PayPal Sandbox co
   assert.doesNotMatch(blueprint, /PAYPAL_WEBHOOK_ID\s*\n\s*value:\s*[^\s]+/);
   assert.match(api, /key: AI_PROVIDER\s*\n\s+value: groq/);
   assert.match(api, /key: GROQ_MODEL\s*\n\s+value: openai\/gpt-oss-20b/);
+  assert.doesNotMatch(blueprint, /key:\s*OPENAI_(?:API_KEY|MODEL)/);
   assert.doesNotMatch(api, /key: VITE_/);
-  assert.match(web, /key: VITE_API_URL/);
+  assert.match(
+    web,
+    /key: VITE_API_URL\s*\n\s+fromService:\s*\n\s+name: proofpay-staging-api\s*\n\s+type: web\s*\n\s+envVarKey: RENDER_EXTERNAL_URL/,
+  );
+  assert.doesNotMatch(api, /fromService:/, "the API must not point back to the web service");
   assert.match(web, /key: VITE_SUPABASE_URL/);
   assert.match(web, /key: VITE_SUPABASE_ANON_KEY/);
   assert.doesNotMatch(web, /SUPABASE_SERVICE_ROLE_KEY|GROQ_API_KEY|OPENAI_API_KEY|PAYPAL_/);
-  assert.equal((blueprint.match(/sync: false/g) ?? []).length, 12);
+  assert.equal((blueprint.match(/sync: false/g) ?? []).length, 8);
 });
 
 test("Node version is consistent and release npm test excludes local operator tools", () => {

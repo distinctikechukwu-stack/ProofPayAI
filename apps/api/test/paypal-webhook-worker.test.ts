@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { PaypalApiError, PaypalReadError, type PaypalClient } from "../src/paypal.js";
-import { PaypalWebhookWorker, type PaypalWebhookWorkerOptions } from "../src/paypal-webhook-worker.js";
+import { createPaypalWebhookWorkerFromEnvironment, PaypalWebhookWorker, type PaypalWebhookWorkerOptions } from "../src/paypal-webhook-worker.js";
 import type { SupabasePort } from "../src/supabase.js";
 
 const eventId = "239f5928-38be-4805-918a-285d9122ab32";
@@ -32,6 +32,23 @@ function makeWorker(
 }
 
 describe("durable PayPal webhook worker", () => {
+  it("does not construct the worker when the real webhook ID is not configured", () => {
+    vi.stubEnv("SUPABASE_URL", "https://proofpay-staging.supabase.co");
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "mock-service-role-key");
+    vi.stubEnv("PAYPAL_SANDBOX_CLIENT_ID", "mock-sandbox-client-id");
+    vi.stubEnv("PAYPAL_SANDBOX_CLIENT_SECRET", "mock-sandbox-client-secret");
+    vi.stubEnv("PAYPAL_WEBHOOK_ID", "");
+
+    try {
+      const logger = { info: vi.fn(), warn: vi.fn() };
+      expect(createPaypalWebhookWorkerFromEnvironment(logger)).toBeNull();
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("reconciles a PAID provider snapshot instead of trusting stale event status", async () => {
     const names: string[] = [];
     const { worker, service, paypal } = makeWorker(async (name) => {

@@ -42,8 +42,6 @@ projects:
                 sync: false
               - key: PAYPAL_SANDBOX_CLIENT_SECRET
                 sync: false
-              - key: PAYPAL_WEBHOOK_ID
-                sync: false
 
           - type: web
             name: proofpay-staging-web

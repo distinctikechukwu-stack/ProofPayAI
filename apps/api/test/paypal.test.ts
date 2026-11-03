@@ -75,6 +75,7 @@ function appFixture(args: {
   serviceRpc?: (name: string, values?: Record<string, unknown>) => Promise<{ data: unknown; error: unknown | null }>;
   paypalWebhookEnqueueTimeoutMs?: number;
   paypalWebhookVerificationTimeoutMs?: number;
+  webhookId?: string | null;
 }) {
   const requestClient = {
     auth: { getUser: vi.fn(async () => ({ data: { user: { id: actorId } }, error: null })) },
@@ -101,7 +102,7 @@ function appFixture(args: {
     paypal: {
       clientId: "sandbox-client-id",
       clientSecret: "sandbox-client-secret",
-      webhookId: "sandbox-webhook-id",
+      ...(args.webhookId === null ? {} : { webhookId: args.webhookId ?? "sandbox-webhook-id" }),
       webhookVerificationTimeoutMs: args.paypalWebhookVerificationTimeoutMs,
       fetch: args.fetch,
     },
@@ -544,6 +545,28 @@ describe("PayPal Sandbox REST boundary", () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: "PayPal webhook signature verification failed." });
+    expect(serviceRpc).not.toHaveBeenCalled();
+  });
+
+  it("serves the API without a webhook ID while keeping webhook delivery disabled", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ verification_status: "SUCCESS" }));
+    const { appPromise, serviceRpc } = appFixture({ fetch, webhookId: null });
+    app = await appPromise;
+
+    const health = await app.inject({ method: "GET", url: "/health" });
+    const status = await app.inject({ method: "GET", url: "/api/status" });
+    const webhook = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("webhook-id-unconfigured") },
+      payload: { id: "event-webhook-id-unconfigured", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
+    });
+
+    expect(health.statusCode).toBe(200);
+    expect(status.statusCode).toBe(200);
+    expect(status.json().integrations).toMatchObject({ paypal: true, paypalWebhook: false });
+    expect(webhook.statusCode).toBe(503);
+    expect(fetch).not.toHaveBeenCalled();
     expect(serviceRpc).not.toHaveBeenCalled();
   });
 

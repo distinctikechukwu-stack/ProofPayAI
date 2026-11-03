@@ -18,6 +18,13 @@ test("Blueprint scopes both uniquely named services to ProofPay AI / Staging", (
   assert.match(blueprint, /generation: ['\"]?off['\"]?/);
   assert.match(blueprint, /name: proofpay-staging-api/);
   assert.match(blueprint, /name: proofpay-staging-web/);
+  assert.deepEqual(
+    [...blueprint.matchAll(/^[ \t]*(?:-[ \t]+)?name:[ \t]*(.+)$/gm)].map((match) => match[1]),
+    ["ProofPay AI", "Staging", "proofpay-staging-api", "proofpay-staging-web"],
+    "the Blueprint must define only the approved project, environment, and two services",
+  );
+  assert.doesNotMatch(blueprint, /Shipment-Tracker/);
+  assert.doesNotMatch(blueprint, /^[ \t]*-[ \t]+name:[ \t]*Production[ \t]*$/m);
   assert.match(blueprint, /branch: codex\/proofpay-staging-release/);
   assert.equal((blueprint.match(/autoDeployTrigger: ['\"]?off['\"]?/g) ?? []).length, 2);
 });
@@ -33,6 +40,9 @@ test("API and durable webhook worker share the paid web service startup", async 
   assert.match(api, /APP_ORIGIN/);
   assert.match(server, /createPaypalWebhookWorkerFromEnvironment/);
   assert.match(server, /webhookWorker\?\.start\(\)/);
+  assert.match(server, /if \(webhookWorker\)/);
+  assert.match(server, /await app\.listen/);
+  assert.match(server, /webhook queue worker is not configured/);
   assert.doesNotMatch(api, /preDeployCommand|db push|migration.*apply/i);
 });
 
@@ -51,9 +61,10 @@ test("only backend variables hold AI, privileged Supabase, and PayPal Sandbox co
     "SUPABASE_SERVICE_ROLE_KEY",
     "PAYPAL_SANDBOX_CLIENT_ID",
     "PAYPAL_SANDBOX_CLIENT_SECRET",
-    "PAYPAL_WEBHOOK_ID",
   ]) assert.ok(api.includes(`key: ${key}`), `${key} must be declared on the API`);
 
+  assert.doesNotMatch(blueprint, /key:\s*PAYPAL_WEBHOOK_ID/);
+  assert.doesNotMatch(blueprint, /PAYPAL_WEBHOOK_ID\s*\n\s*value:\s*[^\s]+/);
   assert.match(api, /key: AI_PROVIDER\s*\n\s+value: groq/);
   assert.match(api, /key: GROQ_MODEL\s*\n\s+value: openai\/gpt-oss-20b/);
   assert.doesNotMatch(api, /key: VITE_/);
@@ -61,7 +72,7 @@ test("only backend variables hold AI, privileged Supabase, and PayPal Sandbox co
   assert.match(web, /key: VITE_SUPABASE_URL/);
   assert.match(web, /key: VITE_SUPABASE_ANON_KEY/);
   assert.doesNotMatch(web, /SUPABASE_SERVICE_ROLE_KEY|GROQ_API_KEY|OPENAI_API_KEY|PAYPAL_/);
-  assert.equal((blueprint.match(/sync: false/g) ?? []).length, 13);
+  assert.equal((blueprint.match(/sync: false/g) ?? []).length, 12);
 });
 
 test("Node version is consistent and release npm test excludes local operator tools", () => {

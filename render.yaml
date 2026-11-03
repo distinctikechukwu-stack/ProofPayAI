@@ -1,50 +1,67 @@
-services:
-  - type: web
-    name: proofpay-api
-    runtime: node
-    plan: free
-    buildCommand: npm ci && npm run build --workspace @proofpay/shared && npm run build --workspace @proofpay/api
-    startCommand: npm run start --workspace @proofpay/api
-    healthCheckPath: /health
-    envVars:
-      - key: NODE_VERSION
-        value: 26.13.0
-      - key: NODE_ENV
-        value: production
-      - key: APP_ORIGIN
-        sync: false
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_ANON_KEY
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: OPENAI_MODEL
-        sync: false
-      - key: PAYPAL_SANDBOX_CLIENT_ID
-        sync: false
-      - key: PAYPAL_SANDBOX_CLIENT_SECRET
-        sync: false
-      - key: PAYPAL_WEBHOOK_ID
-        sync: false
+previews:
+  generation: 'off'
 
-  - type: web
-    name: proofpay-web
-    runtime: static
-    buildCommand: npm ci && npm run build --workspace @proofpay/shared && npm run build --workspace @proofpay/web
-    staticPublishPath: apps/web/dist
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    envVars:
-      - key: NODE_VERSION
-        value: 26.13.0
-      - key: VITE_API_URL
-        sync: false
-      - key: VITE_SUPABASE_URL
-        sync: false
-      - key: VITE_SUPABASE_ANON_KEY
-        sync: false
+projects:
+  - name: ProofPay AI
+    environments:
+      - name: Staging
+        services:
+          - type: web
+            name: proofpay-staging-api
+            runtime: node
+            branch: codex/proofpay-staging-release
+            plan: 0.5c-512mb
+            autoDeployTrigger: 'off'
+            buildCommand: npm ci && npm run build --workspace @proofpay/shared && npm run build --workspace @proofpay/api
+            startCommand: npm run start --workspace @proofpay/api
+            healthCheckPath: /health
+            envVars:
+              - key: NODE_VERSION
+                value: 26.13.0
+              - key: NODE_ENV
+                value: production
+              - key: AI_PROVIDER
+                value: groq
+              - key: GROQ_MODEL
+                value: openai/gpt-oss-20b
+              - key: GROQ_API_KEY
+                sync: false
+              - key: OPENAI_API_KEY
+                sync: false
+              - key: OPENAI_MODEL
+                sync: false
+              - key: APP_ORIGIN
+                sync: false
+              - key: SUPABASE_URL
+                sync: false
+              - key: SUPABASE_ANON_KEY
+                sync: false
+              - key: SUPABASE_SERVICE_ROLE_KEY
+                sync: false
+              - key: PAYPAL_SANDBOX_CLIENT_ID
+                sync: false
+              - key: PAYPAL_SANDBOX_CLIENT_SECRET
+                sync: false
+              - key: PAYPAL_WEBHOOK_ID
+                sync: false
+
+          - type: web
+            name: proofpay-staging-web
+            runtime: static
+            branch: codex/proofpay-staging-release
+            autoDeployTrigger: 'off'
+            buildCommand: npm ci && npm run build --workspace @proofpay/shared && npm run build --workspace @proofpay/web
+            staticPublishPath: apps/web/dist
+            routes:
+              - type: rewrite
+                source: /*
+                destination: /index.html
+            envVars:
+              - key: NODE_VERSION
+                value: 26.13.0
+              - key: VITE_API_URL
+                sync: false
+              - key: VITE_SUPABASE_URL
+                sync: false
+              - key: VITE_SUPABASE_ANON_KEY
+                sync: false

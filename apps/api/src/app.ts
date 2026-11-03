@@ -1,7 +1,8 @@
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest, type RequestPayload } from "fastify";
 import { createHash, randomBytes } from "node:crypto";
+import { Transform } from "node:stream";
 import { z } from "zod";
 import {
   allocateBudgetByWeight,
@@ -56,8 +57,10 @@ import {
   AiConfigurationError,
   AiEvidenceError,
   AiProviderError,
-  generateOpenAiStructured,
-  isOpenAiConfigured,
+  generateConfiguredStructuredAi,
+  getAiModel,
+  getAiProvider,
+  isAiConfigured,
   verifyScopeEvidence,
   type StructuredAiGenerator,
 } from "./ai.js";
@@ -84,11 +87,12 @@ export interface AppOptions {
   createAuditSupabaseClient?: SupabaseAuditFactory;
   generateAi?: StructuredAiGenerator;
   paypal?: PaypalConfig;
+  paypalWebhookEnqueueTimeoutMs?: number;
 }
 
 type RequestContext = { client: SupabasePort; userId: string };
 
-const milestoneGenerationJsonSchema: Record<string, unknown> = {
+export const milestoneGenerationJsonSchema: Record<string, unknown> = {
   type: "object",
   properties: {
     milestones: {
@@ -118,7 +122,7 @@ const milestoneGenerationJsonSchema: Record<string, unknown> = {
   additionalProperties: false,
 };
 
-const scopeAnalysisJsonSchema: Record<string, unknown> = {
+export const scopeAnalysisJsonSchema: Record<string, unknown> = {
   type: "object",
   properties: {
     classification: { type: "string", enum: ["covered", "possibly_covered", "outside_scope", "clarification_required"] },
@@ -145,8 +149,8 @@ const scopeAnalysisJsonSchema: Record<string, unknown> = {
         description: { type: "string" },
         deliverables: { type: "array", items: { type: "string" }, maxItems: 20 },
         openQuestions: { type: "array", items: { type: "string" }, maxItems: 20 },
-        amountDeltaMinor: { type: "null" },
-        scheduleDeltaDays: { type: "null" },
+        amountDeltaMinor: { type: ["integer", "null"] },
+        scheduleDeltaDays: { type: ["integer", "null"] },
         estimateExplanation: { type: "string" },
       },
       required: ["title", "description", "deliverables", "openQuestions", "amountDeltaMinor", "scheduleDeltaDays", "estimateExplanation"],
@@ -163,6 +167,45 @@ const paypalWebhookEventSchema = z.object({
   event_type: z.string().min(1).max(120),
   resource: z.object({ id: z.string().min(1).max(255) }).passthrough(),
 }).passthrough();
+const paypalWebhookEnqueueReceiptSchema = z.object({
+  duplicate: z.boolean(),
+  processed: z.boolean(),
+  pending: z.boolean(),
+});
+const paypalTransmissionTimestampSchema = z.string().datetime({ offset: true });
+const PAYPAL_WEBHOOK_ENQUEUE_TIMEOUT_MS = 5_000;
+const PAYPAL_WEBHOOK_VERIFY_TOTAL_TIMEOUT_MS = 17_000;
+
+type RequestWithRawBody = FastifyRequest & { rawBody?: string };
+
+async function captureRawJsonBody(request: FastifyRequest, _reply: FastifyReply, payload: RequestPayload): Promise<RequestPayload> {
+  const chunks: Buffer[] = [];
+  const capture = new Transform({
+    transform(chunk: Buffer | string, _encoding, callback) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      chunks.push(bytes);
+      const stream = this as Transform & { receivedEncodedLength: number };
+      stream.receivedEncodedLength += bytes.length;
+      callback(null, bytes);
+    },
+    flush(callback) {
+      (request as RequestWithRawBody).rawBody = Buffer.concat(chunks).toString("utf8");
+      callback();
+    },
+  }) as Transform & { receivedEncodedLength: number };
+  capture.receivedEncodedLength = 0;
+  return payload.pipe(capture);
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("operation_timeout")), timeoutMs);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error: unknown) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
 
 const paypalInvoiceRowSchema = z.object({
   id: z.string().min(1),
@@ -329,8 +372,8 @@ function stringHeader(value: string | string[] | undefined): string | null {
 }
 
 async function authenticateRequest(
-  request: { headers: { authorization?: string | undefined } },
-  reply: { code(status: number): { send(payload: unknown): unknown } },
+  request: FastifyRequest,
+  reply: FastifyReply,
   options: AppOptions,
 ): Promise<RequestContext | null> {
   const authorization = request.headers.authorization;
@@ -354,13 +397,27 @@ async function authenticateRequest(
       const status = typeof error === "object" && error !== null && "status" in error
         ? Number((error as { status: unknown }).status)
         : 401;
-      reply.code(status >= 500 ? 503 : 401).send({
-        error: status >= 500 ? "Supabase authentication is temporarily unavailable." : "Your session is invalid or expired.",
+      const rawCode = typeof error === "object" && error !== null && "code" in error
+        ? (error as { code: unknown }).code
+        : undefined;
+      const code = typeof rawCode === "string" && /^[a-z0-9_-]{1,64}$/i.test(rawCode) ? rawCode : "unknown";
+      const rawName = typeof error === "object" && error !== null && "name" in error
+        ? (error as { name: unknown }).name
+        : undefined;
+      const errorType = typeof rawName === "string" && /^[a-z0-9_-]{1,64}$/i.test(rawName) ? rawName : "unknown";
+      const requestId = /^[a-z0-9_-]{1,64}$/i.test(request.id) ? request.id : "unavailable";
+      const upstreamUnavailable = !Number.isFinite(status) || status <= 0 || status >= 500;
+      const responseStatus = upstreamUnavailable ? 503 : 401;
+      request.log.warn({ requestId, status: Number.isFinite(status) ? status : 0, code, errorType }, "Supabase session validation failed");
+      reply.code(responseStatus).send({
+        error: upstreamUnavailable ? "Supabase authentication is temporarily unavailable." : "Your session is invalid or expired.",
       });
       return null;
     }
     return { client, userId: data.user.id };
   } catch {
+    const requestId = /^[a-z0-9_-]{1,64}$/i.test(request.id) ? request.id : "unavailable";
+    request.log.warn({ requestId, status: 503, code: "validation_exception" }, "Supabase session validation failed");
     reply.code(503).send({ error: "Supabase authentication is temporarily unavailable." });
     return null;
   }
@@ -377,7 +434,13 @@ function safeDatabaseError(error: unknown): { status: number; message: string } 
   return { status: 502, message: "The project service could not complete this request." };
 }
 
-function rpcFailure(reply: { code(status: number): { send(payload: unknown): unknown } }, error: unknown) {
+function rpcFailure(reply: FastifyReply, error: unknown) {
+  const rawCode = typeof error === "object" && error !== null && "code" in error
+    ? (error as { code: unknown }).code
+    : undefined;
+  const databaseCode = typeof rawCode === "string" && /^[a-z0-9_-]{1,64}$/i.test(rawCode) ? rawCode : "unknown";
+  const requestId = /^[a-z0-9_-]{1,64}$/i.test(reply.request.id) ? reply.request.id : "unavailable";
+  reply.request.log.warn({ requestId, databaseCode }, "Supabase database request failed");
   const safe = safeDatabaseError(error);
   return reply.code(safe.status).send({ error: safe.message });
 }
@@ -449,7 +512,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     status: "ok" as const,
     integrations: {
       supabase: isConfiguredUrl(process.env.SUPABASE_URL) && isConfiguredSecret(process.env.SUPABASE_ANON_KEY),
-      ai: isOpenAiConfigured(),
+      ai: isAiConfigured(),
       aiAuditStorage: isConfiguredUrl(process.env.SUPABASE_URL) && isConfiguredSecret(process.env.SUPABASE_SERVICE_ROLE_KEY),
       paypal: paypalConfigured,
       paypalWebhook: paypalWebhookConfigured,
@@ -1732,12 +1795,14 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     });
   });
 
-  app.post("/api/webhooks/paypal", async (request, reply) => {
+  app.post("/api/webhooks/paypal", { preParsing: captureRawJsonBody }, async (request, reply) => {
     if (!paypalClient || !paypalWebhookConfigured) return reply.code(503).send({ error: "PayPal Sandbox webhook verification is not configured on this server." });
     const serviceClient = createServiceClient(options);
     if (!serviceClient) return reply.code(503).send({ error: "Supabase service-role access is not configured for webhook processing." });
     const parsed = paypalWebhookEventSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "A valid PayPal webhook event body is required." });
+    const rawEventJson = (request as RequestWithRawBody).rawBody;
+    if (!rawEventJson) return reply.code(400).send({ error: "The original PayPal event body could not be verified." });
     const transmission = {
       authAlgo: stringHeader(request.headers["paypal-auth-algo"]),
       certUrl: stringHeader(request.headers["paypal-cert-url"]),
@@ -1748,11 +1813,14 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (Object.values(transmission).some((value) => value === null)) {
       return reply.code(400).send({ error: "PayPal signature headers are incomplete." });
     }
+    if (!paypalTransmissionTimestampSchema.safeParse(transmission.transmissionTime).success) {
+      return reply.code(400).send({ error: "The PayPal transmission timestamp is invalid." });
+    }
     let verified = false;
     try {
-      verified = await paypalClient.verifyWebhook(parsed.data, transmission as {
+      verified = await withTimeout(paypalClient.verifyWebhook(parsed.data, transmission as {
         authAlgo: string; certUrl: string; transmissionId: string; transmissionSignature: string; transmissionTime: string;
-      });
+      }, rawEventJson), PAYPAL_WEBHOOK_VERIFY_TOTAL_TIMEOUT_MS);
     } catch (cause) {
       if (cause instanceof PaypalApiError) request.log.warn({ debugId: cause.debugId }, "PayPal webhook verification request failed");
       const safe = normalizePaypalError(cause);
@@ -1764,29 +1832,31 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       "INVOICING.INVOICE.CANCELLED", "INVOICING.INVOICE.REFUNDED", "INVOICING.INVOICE.UPDATED",
       "INVOICING.INVOICE.SCHEDULED",
     ]);
-    if (!supportedEvents.has(parsed.data.event_type)) return { verified: true, processed: false };
+    if (!supportedEvents.has(parsed.data.event_type)) return reply.code(200).send({ verified: true, accepted: false });
 
-    let providerInvoice: PaypalInvoice;
+    let queued: { data: unknown; error: unknown | null };
     try {
-      providerInvoice = await paypalClient.showInvoice(parsed.data.resource.id);
-    } catch (cause) {
-      const safe = normalizePaypalError(cause);
-      return reply.code(safe.status).send({ error: "The verified event could not be reconciled to the current PayPal invoice state." });
-    }
-    if (providerInvoice.id !== parsed.data.resource.id) return reply.code(502).send({ error: "PayPal returned a different invoice for this verified event." });
-    const applied = await serviceClient.rpc("apply_verified_paypal_webhook", {
+      queued = await withTimeout(serviceClient.rpc("enqueue_verified_paypal_webhook", {
       p_provider_event_id: parsed.data.id,
       p_event_type: parsed.data.event_type,
       p_resource_id: parsed.data.resource.id,
       p_payload: parsed.data,
-      p_provider_status: providerInvoice.status,
-      p_invoice_status: providerInvoiceStatus(providerInvoice),
-      p_invoice_url: providerInvoice.invoiceUrl,
-      p_paid_at: providerInvoice.paidAt,
-      p_observed_at: new Date().toISOString(),
-    });
-    if (applied.error) return rpcFailure(reply, applied.error);
-    return { verified: true, processed: true, result: applied.data };
+      }), options.paypalWebhookEnqueueTimeoutMs ?? PAYPAL_WEBHOOK_ENQUEUE_TIMEOUT_MS);
+    } catch {
+      request.log.warn({ requestId: request.id, stage: "webhook_enqueue", errorCode: "timeout" }, "Verified PayPal event could not be durably acknowledged before the queue timeout");
+      return reply.code(503).send({ error: "The verified PayPal event was not confirmed in durable storage. PayPal may retry delivery." });
+    }
+    if (queued.error) {
+      const rawCode = typeof queued.error === "object" && queued.error !== null && "code" in queued.error
+        ? (queued.error as { code: unknown }).code
+        : undefined;
+      const databaseCode = typeof rawCode === "string" && /^[a-z0-9_-]{1,64}$/i.test(rawCode) ? rawCode : "unknown";
+      request.log.warn({ requestId: request.id, stage: "webhook_enqueue", databaseCode }, "Verified PayPal event could not be durably accepted");
+      return reply.code(503).send({ error: "The verified PayPal event could not be stored. PayPal may retry delivery." });
+    }
+    const receipt = paypalWebhookEnqueueReceiptSchema.safeParse(queued.data);
+    if (!receipt.success) return reply.code(503).send({ error: "The verified PayPal event storage result could not be confirmed. PayPal may retry delivery." });
+    return reply.code(202).send({ verified: true, accepted: true, duplicate: receipt.data.duplicate });
   });
 
   app.get<{ Params: { projectId: string } }>("/api/projects/:projectId", async (request, reply) => {
@@ -2038,8 +2108,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (!context) return;
     const parsed = generateMilestonesRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(422).send({ error: "Review the project brief, budget, and requirements before generating milestones.", issues: parsed.error.issues });
-    const generate = options.generateAi ?? generateOpenAiStructured;
-    if (!options.generateAi && !isOpenAiConfigured()) return reply.code(503).send({ error: "AI is not configured on this server." });
+    const generate = options.generateAi ?? generateConfiguredStructuredAi;
+    if (!options.generateAi && !isAiConfigured()) return reply.code(503).send({ error: "AI is not configured on this server." });
     try {
       const generated = await generate({
         name: "proofpay_milestones",
@@ -2079,8 +2149,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       if (!isUuid(request.params.projectId) || !isUuid(request.params.requestId)) {
         return reply.code(400).send({ error: "Project and scope request IDs must be UUIDs." });
       }
-      const generate = options.generateAi ?? generateOpenAiStructured;
-      if (!options.generateAi && !isOpenAiConfigured()) return reply.code(503).send({ error: "AI is not configured on this server." });
+      const generate = options.generateAi ?? generateConfiguredStructuredAi;
+      if (!options.generateAi && !isAiConfigured()) return reply.code(503).send({ error: "AI is not configured on this server." });
 
       const { data: scopeRequest, error: requestError } = await context.client.from("change_requests")
         .select("id,project_id,based_on_agreement_version_id,created_by,request_text,status")
@@ -2186,8 +2256,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
           p_request_id: request.params.requestId,
           p_agreement_version_id: agreementVersionId,
           p_input_hash: inputHash,
-          p_provider: "openai",
-          p_model: process.env.OPENAI_MODEL?.trim() || null,
+          p_provider: getAiProvider(),
+          p_model: getAiModel(),
           p_result: checked.data,
         });
         if (error) return rpcFailure(reply, error);

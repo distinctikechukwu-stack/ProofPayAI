@@ -4,9 +4,9 @@ ProofPay AI is a freelancer project workspace for shared agreements, milestone a
 
 ## Implementation status
 
-The original hackathon workflow has an implemented React frontend, authenticated Node API paths, Supabase migrations, structured AI boundaries, and a Sandbox-only PayPal Invoicing REST integration. Workspace tests exercise provider and database seams with fakes; they do not prove live Supabase, AI, or PayPal behavior. The signed-out workspace is explicitly sample data.
+The original hackathon workflow has an implemented React frontend, authenticated Node API, Supabase Auth/Postgres/RLS integration, structured AI boundaries, and Sandbox-only PayPal Invoicing API v2 integration. As of 2026-11-03, the confirmed non-production Supabase project has all 18 migrations applied and verified. Real Groq milestone generation and scope analysis, PayPal Sandbox OAuth, invoice creation, and one invoice send have been verified. The continuous authenticated UI story, Sandbox payment, and verified webhook delivery/reconciliation remain unverified. The signed-out workspace is explicitly sample data.
 
-The PayPal workflow includes durable create/send claims, unknown-outcome reconciliation, verified-webhook handling, and provider-state mapping. No live PayPal request has been made, and no migration has been applied or parsed by PostgreSQL. Marketplace phases 8 and 9 include protected profile/role flows, public opt-in profiles, persisted jobs/proposals/offers/services, and editable AI/manual milestone planning. Phase 10 includes project-member conversations, idempotent messages, read receipts, notifications, private attachments, blocking, abuse reports, and realtime message subscriptions. Phase 11 adds hourly offer-to-agreement conversion, manual and timer-based time entries, client approvals/disputes, and approved-hours PayPal invoice batching. Phase 12 adds admin-only report review, explicit account-deletion requests, baseline API security headers, and an operations runbook. These database paths are tested with fakes only; no AI provider call has been made, and PostgreSQL/Supabase RLS, storage, realtime, and moderation behavior remain unverified. Reviews/reputation, actual account deletion/retention, and live service verification remain incomplete. No deployment has been performed. See the [implementation tracker](docs/IMPLEMENTATION_PROGRESS.md) for the phase ledger and blockers.
+The PayPal workflow includes durable create/send claims, unknown-outcome reconciliation, signature-verified webhook handling, a durable event queue, and provider-state mapping. The fictional Sandbox invoice is SENT; it must not be recreated or resent. The configured local webhook ID is still a placeholder and no hosted HTTPS endpoint or Render service has been verified. Marketplace phases 8–12 remain implemented and preserved, but new marketplace scope is frozen until the hackathon demo is complete. Reviews/reputation, actual account erasure/retention, monitoring, and backup/restore readiness remain incomplete. No deployment has been performed. See the [implementation tracker](docs/IMPLEMENTATION_PROGRESS.md) for verified results and blockers.
 
 ## Project structure
 
@@ -50,23 +50,15 @@ npm.cmd run typecheck
 
 ## Supabase configuration
 
-Create a Supabase project and fill `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` in the private root `.env` file. Apply migrations in timestamp order:
-
-1. `supabase/migrations/202610290001_core_project_security.sql`
-2. `supabase/migrations/202610290002_paypal_invoice_workflow.sql`
-3. `supabase/migrations/202610300001_marketplace_profiles.sql`
-4. `supabase/migrations/202610300002_marketplace_jobs.sql`
-5. `supabase/migrations/202610300003_messaging_notifications.sql`
-6. `supabase/migrations/202610300004_hourly_workflows.sql`
-7. `supabase/migrations/202610300005_commercial_hardening.sql`
-
-The SQL has not been applied or verified against PostgreSQL/Supabase in this workspace. The hourly migration also attaches older accepted hourly offers that have no project to a draft project and agreement. The commercial-hardening migration adds admin report review, listing holds, an audit trail, and deletion requests; it does not delete accounts. Review every migration, apply them to a non-production project, and test RLS and role boundaries before using persisted workflows. Read [`supabase/README.md`](supabase/README.md), [`supabase/migrations/README.md`](supabase/migrations/README.md), and the [operations guide](docs/OPERATIONS.md).
+Copy `.env.example` to the ignored root `.env`; use the project's `sb_publishable_...` key for `SUPABASE_ANON_KEY` and `VITE_SUPABASE_ANON_KEY`, and its `sb_secret_...` key only for server-side `SUPABASE_SERVICE_ROLE_KEY`. Keep `SUPABASE_URL` and `VITE_SUPABASE_URL` set to the project URL. Never place the secret key in a `VITE_*` variable or chat. The original seven migrations are followed by timestamped corrective migrations through `202611020004_paypal_webhook_durable_processing.sql`. ProofPayAI Staging currently has all 18 applied. For a new non-production database, inspect the complete timestamp-ordered migration set, check remote history, and run the official Supabase CLI dry-run before any separately approved apply. Do not replay the seven-file historical list as if it were the complete schema. Read [`supabase/README.md`](supabase/README.md), [`supabase/migrations/README.md`](supabase/migrations/README.md), and the [operations guide](docs/OPERATIONS.md).
 
 ## AI and PayPal Sandbox
 
-AI analysis uses server-side `OPENAI_API_KEY` and `OPENAI_MODEL`. PayPal is fixed to the Sandbox host and uses server-side `PAYPAL_SANDBOX_CLIENT_ID`, `PAYPAL_SANDBOX_CLIENT_SECRET`, and `PAYPAL_WEBHOOK_ID`. Do not create live credentials or put secrets in `VITE_*` variables.
+AI uses Groq by default (`AI_PROVIDER=groq`, server-only `GROQ_API_KEY`, and `GROQ_MODEL=openai/gpt-oss-20b`); OpenAI remains available by setting `AI_PROVIDER=openai` with server-only `OPENAI_API_KEY` and `OPENAI_MODEL`. If `AI_PROVIDER` is omitted, a configured Groq key takes precedence; an existing OpenAI-only configuration remains compatible. AI keys must never use `VITE_*` variables. PayPal is fixed to the Sandbox host and uses server-side `PAYPAL_SANDBOX_CLIENT_ID`, `PAYPAL_SANDBOX_CLIENT_SECRET`, and `PAYPAL_WEBHOOK_ID`. Do not create live credentials or put secrets in `VITE_*` variables.
 
-Invoice creation and sending require configured Supabase service-role access, an eligible persisted milestone or a batch of client-approved hourly entries, and PayPal Sandbox credentials. The hourly amount and entry set are derived server-side from the active accepted rate. Verified webhooks additionally require a registered Sandbox webhook pointing to a public HTTPS API endpoint. The app does not represent an unconfigured integration, sample, or mock as a real invoice or payment. See [`paypal-plan.md`](paypal-plan.md) and [`docs/APIMATIC_INTEGRATION.md`](docs/APIMATIC_INTEGRATION.md).
+Both AI features keep their Zod checks and human-review boundary. The applied scope-analysis audit validation accepts exactly `openai` and `groq`; one real Groq scope-analysis result was validated and persisted with provider `groq`. Do not treat AI recommendations as approvals.
+
+Invoice creation and sending require configured Supabase service-role access, an eligible persisted milestone or a batch of client-approved hourly entries, and PayPal Sandbox credentials. The hourly amount and entry set are derived server-side from the active accepted rate. Migration 18 provides durable verified-event processing, but webhook operation still requires a real Sandbox webhook ID and public HTTPS API endpoint. The local webhook ID is a placeholder; no webhook or payment has been tested. The app does not represent an unconfigured integration, sample, or mock as a real invoice or payment. See [`paypal-plan.md`](paypal-plan.md) and [`docs/APIMATIC_INTEGRATION.md`](docs/APIMATIC_INTEGRATION.md).
 
 ## Verification
 
@@ -84,7 +76,7 @@ There is no workspace lint script yet. The current build emits a visible Vite wa
 
 Import [`postman/ProofPayAI.postman_collection.json`](postman/ProofPayAI.postman_collection.json). Use a private environment for `apiBase`, a Supabase access token, and record IDs; never export credentials. The collection is JSON-validated but has not been run through Postman against a configured API.
 
-`render.yaml` defines a Render Blueprint for the Node API and static Vite app. It is configuration only: no Render service is deployed. Supply the public Supabase settings at frontend build time and server-only values in the API service, apply the migrations, set the exact app origin, and configure a public HTTPS PayPal Sandbox webhook before testing a full lifecycle. See [`docs/SUBMISSION_CHECKLIST.md`](docs/SUBMISSION_CHECKLIST.md).
+`render.yaml` defines a dedicated ProofPay AI Staging Blueprint for the Node API and static Vite app. Its paid 0.5 CPU / 512 MB API service runs the HTTP server and durable webhook worker together, and declares Groq/OpenAI plus server-only Supabase and PayPal Sandbox settings. The frontend receives only public `VITE_*` settings. This is configuration only: no Render service is deployed. Do not sync or deploy this Blueprint until the target, source branch, environment, plan, and required changes have been confirmed. See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) and [`docs/SUBMISSION_CHECKLIST.md`](docs/SUBMISSION_CHECKLIST.md).
 
 ## Requirements and demo materials
 

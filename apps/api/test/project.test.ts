@@ -3,7 +3,7 @@ import { buildApp } from "../src/app.js";
 import type { SupabaseFactory, SupabasePort } from "../src/supabase.js";
 
 const validDraft = {
-  idempotencyKey: "d75499e7-64e7-4e8a-b902-e3c8ff6ea217",
+  idempotencyKey: "296938c0-465f-4ab1-9d91-8aa68dae34de",
   title: "A small website",
   description: "Design and build a marketing site.",
   clientName: "Northstar Studio",
@@ -34,9 +34,9 @@ function factory(options: { authError?: unknown; rpcError?: unknown; rpcData?: u
 }
 
 const scopeIds = {
-  project: "09f06762-02fb-4527-9109-6bc7dafb99d1",
-  request: "fa667c7c-c791-47b6-8c4c-60606c4d8b57",
-  agreement: "7820937d-a54f-43d2-97e7-4a9b0837950c",
+  project: "94281c1c-16f7-48fa-947c-cf339c4ba3e9",
+  request: "fdb2f3c1-f5f9-496e-9248-01494352c03d",
+  agreement: "ef8ff98e-7227-4a9c-90fd-b19230f91ef4",
 };
 
 function scopeFactory(result: unknown, rpcData: unknown = { analysisId: "analysis-1", result }) {
@@ -189,13 +189,39 @@ describe("authenticated project API", () => {
     app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
     const list = await app.inject({ method: "GET", url: "/api/projects", headers: { authorization: "Bearer valid-token" } });
     const denied = await app.inject({
-      method: "POST", url: "/api/agreements/09f06762-02fb-4527-9109-6bc7dafb99d1/accept",
+      method: "POST", url: "/api/agreements/94281c1c-16f7-48fa-947c-cf339c4ba3e9/accept",
       headers: { authorization: "Bearer valid-token" },
     });
     expect(list.statusCode).toBe(200);
     expect(list.json().projects).toHaveLength(1);
     expect(denied.statusCode).toBe(403);
     expect(denied.body).not.toContain("private database detail");
+  });
+
+  it("forwards an authenticated hourly-agreement acceptance to the caller-scoped RPC", async () => {
+    const agreementVersionId = "7c71f7dd-2006-4bf1-9fe5-8465e8069cb9";
+    const supabase = factory({ rpcData: { state: "accepted", acceptedRoleCount: 2 } });
+    app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
+    const response = await app.inject({
+      method: "POST", url: `/api/agreements/${agreementVersionId}/accept`, headers: { authorization: "Bearer valid-token" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ state: "accepted", acceptedRoleCount: 2 });
+    expect(supabase.getUser).toHaveBeenCalledWith("valid-token");
+    expect(supabase.rpc).toHaveBeenCalledWith("accept_agreement_version", { p_agreement_version_id: agreementVersionId });
+  });
+
+  it("keeps an unauthorized hourly-agreement acceptance denied without exposing PostgreSQL details", async () => {
+    const agreementVersionId = "7c71f7dd-2006-4bf1-9fe5-8465e8069cb9";
+    const supabase = factory({ rpcError: { code: "42501", message: "permission denied for table hourly_contracts" } });
+    app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
+    const response = await app.inject({
+      method: "POST", url: `/api/agreements/${agreementVersionId}/accept`, headers: { authorization: "Bearer valid-token" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error).toBe("You do not have access to perform this action.");
+    expect(response.body).not.toContain("hourly_contracts");
+    expect(supabase.rpc).toHaveBeenCalledWith("accept_agreement_version", { p_agreement_version_id: agreementVersionId });
   });
 
   it("aggregates only the authenticated user's persisted analytics with exact paid totals", async () => {
@@ -244,7 +270,7 @@ describe("authenticated project API", () => {
     const supabase = factory();
     app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
     const response = await app.inject({
-      method: "GET", url: "/api/projects/09f06762-02fb-4527-9109-6bc7dafb99d1",
+      method: "GET", url: "/api/projects/94281c1c-16f7-48fa-947c-cf339c4ba3e9",
       headers: { authorization: "Bearer valid-token" },
     });
     expect(response.statusCode).toBe(404);
@@ -272,6 +298,8 @@ describe("authenticated project API", () => {
   });
 
   it("stores evidence-checked scope analysis against the accepted version and marks it for human review", async () => {
+    vi.stubEnv("AI_PROVIDER", "groq");
+    vi.stubEnv("GROQ_MODEL", "openai/gpt-oss-20b");
     const analysis = {
       classification: "outside_scope",
       summary: "The booking calendar is not included in the agreed pages.",
@@ -300,9 +328,12 @@ describe("authenticated project API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ analysisId: "analysis-1", analysis, needsHumanReview: true, requiresDualApprovalForAmendment: true });
     expect(supabase.rpc).toHaveBeenCalledWith("record_scope_analysis", expect.objectContaining({
+      p_actor_id: "user-1",
       p_project_id: scopeIds.project,
       p_request_id: scopeIds.request,
       p_agreement_version_id: scopeIds.agreement,
+      p_provider: "groq",
+      p_model: "openai/gpt-oss-20b",
       p_result: analysis,
     }));
   });
@@ -347,14 +378,14 @@ describe("authenticated project API", () => {
       url: `/api/projects/${scopeIds.project}/scope-requests/${scopeIds.request}/change-orders`,
       headers: { authorization: "Bearer valid-token" },
       payload: {
-        idempotencyKey: "d9e1470e-7485-493f-b8a7-a251e66e82e9",
+        idempotencyKey: "771da1d2-5f2c-4f61-a150-d3c7f55011e8",
         title: "Add booking calendar",
         description: "Add a client-facing booking calendar.",
         amountDeltaMinor: 25_000,
         scheduleDeltaDays: 7,
         deliverables: ["Booking calendar"],
         openQuestions: ["Which calendar provider should be used?"],
-        analysisId: "6de201bd-171c-4a35-9876-6302163f034a",
+        analysisId: "0bbd062f-ea39-41ea-863e-0a32a4f910ac",
       },
     });
     expect(response.statusCode).toBe(201);
@@ -373,14 +404,14 @@ describe("authenticated project API", () => {
       url: `/api/projects/${scopeIds.project}/scope-requests/${scopeIds.request}/change-orders`,
       headers: { authorization: "Bearer valid-token" },
       payload: {
-        idempotencyKey: "d9e1470e-7485-493f-b8a7-a251e66e82e9",
+        idempotencyKey: "771da1d2-5f2c-4f61-a150-d3c7f55011e8",
         title: "Empty amendment",
         description: "Nothing changes.",
         amountDeltaMinor: 0,
         scheduleDeltaDays: 0,
         deliverables: [],
         openQuestions: [],
-        analysisId: "6de201bd-171c-4a35-9876-6302163f034a",
+        analysisId: "0bbd062f-ea39-41ea-863e-0a32a4f910ac",
       },
     });
     expect(response.statusCode).toBe(422);
@@ -392,13 +423,13 @@ describe("authenticated project API", () => {
     app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
     const response = await app.inject({
       method: "POST",
-      url: "/api/change-orders/6de201bd-171c-4a35-9876-6302163f034a/decision",
+      url: "/api/change-orders/0bbd062f-ea39-41ea-863e-0a32a4f910ac/decision",
       headers: { authorization: "Bearer valid-token" },
       payload: { decision: "accept" },
     });
     expect(response.statusCode).toBe(200);
     expect(supabase.rpc).toHaveBeenCalledWith("decide_change_order", {
-      p_change_order_version_id: "6de201bd-171c-4a35-9876-6302163f034a",
+      p_change_order_version_id: "0bbd062f-ea39-41ea-863e-0a32a4f910ac",
       p_decision: "accept",
     });
   });

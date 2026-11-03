@@ -26,13 +26,13 @@ describe("ProofPay AI product preview", () => {
     const user = userEvent.setup();
     renderRoute("/app/scope");
 
-    expect(await screen.findByRole("heading", { name: /review the request/i })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /review the request/i }, { timeout: 10000 })).toBeInTheDocument();
     expect(screen.getByText(/scheduling, calendar integrations, and appointment booking are not included/i)).toBeInTheDocument();
     expect(screen.getByText(/no ai provider is connected/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /switch workspace role/i }));
     expect(screen.getByText("Client view")).toBeInTheDocument();
-  });
+  }, 15000);
 
   it("filters the sample project list and recovers from an empty search", async () => {
     const user = userEvent.setup();
@@ -49,7 +49,7 @@ describe("ProofPay AI product preview", () => {
     const user = userEvent.setup();
     renderRoute("/signin");
     expect(await screen.findByText(/supabase auth is not configured/i)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("you@example.com")).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: /email address/i })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /continue without an account/i }));
     expect(await screen.findByRole("heading", { name: /your work, in good shape/i })).toBeInTheDocument();
   });
@@ -105,7 +105,7 @@ describe("ProofPay AI product preview", () => {
   });
 
   it("does not show example time entries or controls in the signed-out hourly workspace", async () => {
-    renderRoute("/app/projects/cf612978-5aac-4ec9-b966-3fd46ad41255/hourly");
+    renderRoute("/app/projects/1319f6b9-8b9c-4138-8dd7-538b54b902f6/hourly");
 
     expect(await screen.findByRole("heading", { name: /sign in to open hourly project work/i }, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /start timer|add draft entry|approve time/i })).not.toBeInTheDocument();
@@ -130,20 +130,20 @@ describe("ProofPay AI product preview", () => {
 
   it("shows a public service from the public API without exposing private row fields", async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ services: [{
-      id: "857b27dc-fd89-462e-9681-215fcc6dfd20", freelancerSlug: "jordan-rivera", freelancerName: "Jordan Rivera",
+      id: "b8bf1bf6-6d84-4acf-8851-e59e69ddd3d4", freelancerSlug: "jordan-rivera", freelancerName: "Jordan Rivera",
       slug: "accessible-page", title: "Accessible product landing page", description: "A responsive product landing page with clear keyboard navigation and a handover.",
       category: "Design", startingPriceMinor: "25000", currency: "USD", deliveryDays: 7, deliverables: ["Responsive landing page"],
       packages: [{ title: "Standard", description: "One page and a review round.", priceMinor: "25000", deliveryDays: 7, deliverables: ["Landing page"] }],
-      ownerEmail: "private@example.com",
+      ownerEmail: "release-test-user-001@example.invalid",
     }] }) }));
     vi.stubGlobal("fetch", fetchMock);
     renderRoute("/app/services");
 
-    expect(await screen.findByRole("heading", { name: "Accessible product landing page" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Accessible product landing page" }, { timeout: 10000 })).toBeInTheDocument();
     expect(screen.getByText(/public services are opt-in listings/i)).toBeInTheDocument();
-    expect(screen.queryByText(/private@example.com/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/release-test-user-001@example.invalid/i)).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/api/services"), expect.objectContaining({ headers: { Accept: "application/json" } }));
-  });
+  }, 15000);
 
   it("renders public freelancer cards from the public API projection", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({

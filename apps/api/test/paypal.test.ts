@@ -5,20 +5,21 @@ import {
   normalizePaypalError,
   PaypalApiError,
   PaypalClient,
+  PaypalPermissionError,
   PaypalWriteUnknownError,
 } from "../src/paypal.js";
 import type { SupabasePort } from "../src/supabase.js";
 
-const actorId = "802b3f51-3452-4b56-86c4-cb1e3c348eef";
-const milestoneId = "dd40c28b-9d8f-4ca7-890a-b803a8e54fdd";
-const invoiceId = "317d05be-99af-4304-a26b-124a80d2257f";
-const claimId = "4dca07f0-138c-4505-bd0d-79f2f238e67b";
+const actorId = "b720da7f-4342-48d9-813a-186d0ac94896";
+const milestoneId = "11a0daff-1e7f-4ca5-88d1-adb655cf3ec8";
+const invoiceId = "239f5928-38be-4805-918a-285d9122ab32";
+const claimId = "d4da3d57-ab38-4fd2-bb23-a1b27b4f49a7";
 const invoiceNumber = "PP-abc123xyz";
 const invoiceUrl = "https://www.sandbox.paypal.com/invoice/p/#example";
 
 const claimedInvoice = {
   id: invoiceId,
-  project_id: "18982f2f-fc76-4c81-a1f3-4960f930a412",
+  project_id: "907a5ffa-fa2b-4b04-a780-f71297594484",
   milestone_id: milestoneId,
   provider_invoice_id: null,
   provider_invoice_number: invoiceNumber,
@@ -47,6 +48,14 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
+const invoiceWriteScope = "https://uri.paypal.com/services/invoicing/invoices/readwrite";
+const generalInvoiceScope = "https://uri.paypal.com/services/invoicing";
+const fullInvoiceScope = "https://api.paypal.com/v1/invoicing:*";
+
+function paypalOAuthResponse(token = "token", scope = invoiceWriteScope): Response {
+  return jsonResponse({ access_token: token, token_type: "Bearer", expires_in: 3600, scope });
+}
+
 function providerInvoice(overrides: Record<string, unknown> = {}) {
   return {
     id: "PAYPAL-INV-1",
@@ -64,6 +73,8 @@ function clientFetch(handler: (url: string, init: RequestInit | undefined) => Pr
 function appFixture(args: {
   fetch: typeof fetch;
   serviceRpc?: (name: string, values?: Record<string, unknown>) => Promise<{ data: unknown; error: unknown | null }>;
+  paypalWebhookEnqueueTimeoutMs?: number;
+  paypalWebhookVerificationTimeoutMs?: number;
 }) {
   const requestClient = {
     auth: { getUser: vi.fn(async () => ({ data: { user: { id: actorId } }, error: null })) },
@@ -86,7 +97,14 @@ function appFixture(args: {
     supabaseAnonKey: "public-anon-key",
     createSupabaseClient: () => requestClient,
     createAuditSupabaseClient: () => serviceClient,
-    paypal: { clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", webhookId: "sandbox-webhook-id", fetch: args.fetch },
+    paypalWebhookEnqueueTimeoutMs: args.paypalWebhookEnqueueTimeoutMs,
+    paypal: {
+      clientId: "sandbox-client-id",
+      clientSecret: "sandbox-client-secret",
+      webhookId: "sandbox-webhook-id",
+      webhookVerificationTimeoutMs: args.paypalWebhookVerificationTimeoutMs,
+      fetch: args.fetch,
+    },
   });
   return { appPromise, serviceRpc };
 }
@@ -99,11 +117,53 @@ describe("PayPal Sandbox REST boundary", () => {
     app = undefined;
   });
 
+  it.each([invoiceWriteScope, generalInvoiceScope, fullInvoiceScope])("accepts the documented invoice write scope %s", async (scope) => {
+    const calls: string[] = [];
+    const fetch = clientFetch(async (url) => {
+      calls.push(url);
+      if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse("sandbox-token", `openid ${scope} profile`);
+      return jsonResponse(providerInvoice(), 201);
+    });
+    const client = new PaypalClient({ clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", fetch });
+
+    const result = await client.createInvoice({
+      invoiceNumber, currency: "USD", invoiceDate: "2026-11-02", clientEmail: "release-test-user-002@example.invalid",
+      milestoneTitle: "Discovery", amountDecimal: "150.00",
+    });
+
+    expect(result.status).toBe("DRAFT");
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toBe("https://api-m.sandbox.paypal.com/v2/invoicing/invoices");
+  });
+
+  it.each([
+    { label: "missing scope", token: { access_token: "token", token_type: "Bearer", expires_in: 3600 } },
+    { label: "unrelated scope", token: { access_token: "token", token_type: "Bearer", expires_in: 3600, scope: "openid profile" } },
+    { label: "read-only scope", token: { access_token: "token", token_type: "Bearer", expires_in: 3600, scope: "https://uri.paypal.com/services/invoicing/invoices/read" } },
+  ])("rejects OAuth with $label before an invoice request", async ({ token }) => {
+    const calls: string[] = [];
+    const fetch = clientFetch(async (url) => {
+      calls.push(url);
+      return jsonResponse(token);
+    });
+    const client = new PaypalClient({ clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", fetch });
+
+    await expect(client.createInvoice({
+      invoiceNumber, currency: "USD", invoiceDate: "2026-11-02", clientEmail: "release-test-user-002@example.invalid",
+      milestoneTitle: "Discovery", amountDecimal: "150.00",
+    })).rejects.toBeInstanceOf(PaypalPermissionError);
+
+    expect(calls).toEqual(["https://api-m.sandbox.paypal.com/v1/oauth2/token"]);
+    expect(normalizePaypalError(new PaypalPermissionError())).toEqual({
+      status: 502, message: "PayPal Sandbox credentials or invoice permissions need attention.",
+    });
+  });
+
   it("uses Sandbox OAuth and sends exact decimal invoice fields without returning credentials", async () => {
     const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
     const fetch = clientFetch(async (url, init) => {
       requests.push({ url, init });
-      if (url.endsWith("/v1/oauth2/token")) return jsonResponse({ access_token: "sandbox-access-token", expires_in: 3600 });
+      if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse("sandbox-token");
       return jsonResponse(providerInvoice(), 201);
     });
     const client = new PaypalClient({ clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", webhookId: "sandbox-webhook-id", fetch });
@@ -112,7 +172,7 @@ describe("PayPal Sandbox REST boundary", () => {
       invoiceNumber,
       currency: "USD",
       invoiceDate: "2026-10-29",
-      clientEmail: "client@example.test",
+      clientEmail: "release-test-user-002@example.invalid",
       milestoneTitle: "Discovery milestone",
       amountDecimal: "150.00",
     });
@@ -125,14 +185,14 @@ describe("PayPal Sandbox REST boundary", () => {
     });
     expect(requests[0]?.init?.body).toBe("grant_type=client_credentials");
     expect(requests[1]?.url).toBe("https://api-m.sandbox.paypal.com/v2/invoicing/invoices");
-    expect(requests[1]?.init?.headers).toMatchObject({ Authorization: "Bearer sandbox-access-token" });
+    expect(requests[1]?.init?.headers).toMatchObject({ Authorization: "Bearer sandbox-token" });
     const body = JSON.parse(String(requests[1]?.init?.body));
     expect(body).toMatchObject({
       detail: { currency_code: "USD", invoice_number: invoiceNumber, invoice_date: "2026-10-29" },
-      primary_recipients: [{ billing_info: { email_address: "client@example.test" } }],
+      primary_recipients: [{ billing_info: { email_address: "release-test-user-002@example.invalid" } }],
       items: [{ name: "Discovery milestone", quantity: "1", unit_amount: { currency_code: "USD", value: "150.00" } }],
     });
-    expect(JSON.stringify(result)).not.toContain("sandbox-access-token");
+    expect(JSON.stringify(result)).not.toContain("sandbox-token");
     expect(JSON.stringify(result)).not.toContain("sandbox-client-secret");
   });
 
@@ -140,7 +200,7 @@ describe("PayPal Sandbox REST boundary", () => {
     const urls: string[] = [];
     const fetch = clientFetch(async (url) => {
       urls.push(url);
-      if (url.endsWith("/v1/oauth2/token")) return jsonResponse({ access_token: "token", expires_in: 3600 });
+      if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse();
       if (url.includes("page=1")) return jsonResponse({ items: [providerInvoice({ detail: { invoice_number: "OTHER" } })], total_pages: 2 });
       return jsonResponse({ items: [providerInvoice()], total_pages: 2 });
     });
@@ -158,13 +218,13 @@ describe("PayPal Sandbox REST boundary", () => {
     let calls = 0;
     const fetch = clientFetch(async (url) => {
       calls += 1;
-      if (url.endsWith("/v1/oauth2/token")) return jsonResponse({ access_token: "token", expires_in: 3600 });
+      if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse();
       throw new TypeError("socket closed");
     });
     const client = new PaypalClient({ clientId: "id", clientSecret: "secret", fetch });
 
     await expect(client.createInvoice({
-      invoiceNumber, currency: "USD", invoiceDate: "2026-10-29", clientEmail: "client@example.test",
+      invoiceNumber, currency: "USD", invoiceDate: "2026-10-29", clientEmail: "release-test-user-002@example.invalid",
       milestoneTitle: "Discovery", amountDecimal: "150.00",
     })).rejects.toBeInstanceOf(PaypalWriteUnknownError);
     expect(calls).toBe(2);
@@ -172,14 +232,14 @@ describe("PayPal Sandbox REST boundary", () => {
 
   it("keeps an unfamiliar provider state unknown and leaves its operation available for reconciliation", async () => {
     const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
-      ? jsonResponse({ access_token: "token", expires_in: 3600 })
+      ? paypalOAuthResponse()
       : jsonResponse(providerInvoice({ status: "FUTURE_PROVIDER_STATE" }), 201));
     const { appPromise, serviceRpc } = appFixture({
       fetch,
       serviceRpc: async (name, values) => {
         if (name === "begin_paypal_invoice_create") return { data: {
           claimed: true, invoice: claimedInvoice, claim: { id: claimId, state: "claimed" },
-          clientEmail: "client@example.test", milestoneTitle: "Discovery",
+          clientEmail: "release-test-user-002@example.invalid", milestoneTitle: "Discovery",
         }, error: null };
         if (name === "finalize_paypal_operation") return { data: { invoice: { ...claimedInvoice, status: "unknown", provider_status: "FUTURE_PROVIDER_STATE" }, claimState: values?.p_outcome }, error: null };
         return { data: null, error: null };
@@ -196,14 +256,14 @@ describe("PayPal Sandbox REST boundary", () => {
 
   it("does not mark an invoice paid from the create action response", async () => {
     const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
-      ? jsonResponse({ access_token: "token", expires_in: 3600 })
+      ? paypalOAuthResponse()
       : jsonResponse(providerInvoice({ status: "PAID" }), 201));
     const { appPromise, serviceRpc } = appFixture({
       fetch,
       serviceRpc: async (name, values) => {
         if (name === "begin_paypal_invoice_create") return { data: {
           claimed: true, invoice: claimedInvoice, claim: { id: claimId, state: "claimed" },
-          clientEmail: "client@example.test", milestoneTitle: "Discovery",
+          clientEmail: "release-test-user-002@example.invalid", milestoneTitle: "Discovery",
         }, error: null };
         if (name === "finalize_paypal_operation") return { data: { invoice: { ...claimedInvoice, status: "unknown" }, claimState: values?.p_outcome }, error: null };
         return { data: null, error: null };
@@ -239,9 +299,11 @@ describe("PayPal Sandbox REST boundary", () => {
 
   it("commits an authorized create claim before contacting PayPal and returns only safe persisted fields", async () => {
     const events: string[] = [];
+    const invoicePayloads: unknown[] = [];
     const fetch = clientFetch(async (url, init) => {
       events.push(`provider:${url}`);
-      if (url.endsWith("/v1/oauth2/token")) return jsonResponse({ access_token: "sandbox-access-token", expires_in: 3600 });
+      if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse("sandbox-token");
+      invoicePayloads.push(JSON.parse(String(init?.body)));
       return jsonResponse(providerInvoice(), 201);
     });
     const { appPromise, serviceRpc } = appFixture({
@@ -251,7 +313,7 @@ describe("PayPal Sandbox REST boundary", () => {
         if (name === "begin_paypal_invoice_create") return {
           data: {
             claimed: true, invoice: claimedInvoice, claim: { id: claimId, state: "claimed" },
-            clientEmail: "client@example.test", clientName: "Client", milestoneTitle: "Discovery",
+            clientEmail: "release-test-user-002@example.invalid", clientName: "Client", milestoneTitle: "Discovery",
           }, error: null,
         };
         if (name === "finalize_paypal_operation") return { data: { invoice: persistedDraft, claimState: values?.p_outcome }, error: null };
@@ -260,21 +322,28 @@ describe("PayPal Sandbox REST boundary", () => {
     });
     app = await appPromise;
 
-    const response = await app.inject({ method: "POST", url: `/api/invoices/milestones/${milestoneId}/create`, headers: { authorization: "Bearer user-access-token" } });
+    const response = await app.inject({
+      method: "POST", url: `/api/invoices/milestones/${milestoneId}/create`,
+      headers: { authorization: "Bearer user-access-token" },
+      body: { clientEmail: "release-test-user-003@example.invalid", billingEmail: "release-test-user-003@example.invalid" },
+    });
     const body = response.json();
 
     expect(response.statusCode).toBe(201);
     expect(body).toMatchObject({ outcome: "created", invoice: { id: invoiceId, status: "draft", invoiceNumber, invoiceUrl } });
-    expect(JSON.stringify(body)).not.toContain("client@example.test");
-    expect(JSON.stringify(body)).not.toContain("sandbox-access-token");
+    expect(JSON.stringify(body)).not.toContain("release-test-user-002@example.invalid");
+    expect(JSON.stringify(body)).not.toContain("sandbox-token");
     expect(events[0]).toBe("database:begin_paypal_invoice_create");
     expect(events[1]).toBe("provider:https://api-m.sandbox.paypal.com/v1/oauth2/token");
     expect(serviceRpc).toHaveBeenCalledWith("begin_paypal_invoice_create", expect.objectContaining({ p_actor_id: actorId, p_milestone_id: milestoneId }));
     expect(serviceRpc).toHaveBeenCalledWith("finalize_paypal_operation", expect.objectContaining({ p_outcome: "completed", p_provider_invoice_id: "PAYPAL-INV-1" }));
+    expect(invoicePayloads).toHaveLength(1);
+    expect(invoicePayloads[0]).toMatchObject({ primary_recipients: [{ billing_info: { email_address: "release-test-user-002@example.invalid" } }] });
+    expect(JSON.stringify(invoicePayloads[0])).not.toContain("release-test-user-003@example.invalid");
   });
 
   it("does not contact PayPal if the database rejects the caller's milestone claim", async () => {
-    const fetch = vi.fn(async () => jsonResponse({ access_token: "token", expires_in: 3600 }));
+    const fetch = vi.fn(async () => paypalOAuthResponse());
     const { appPromise } = appFixture({ fetch, serviceRpc: async () => ({ data: null, error: { code: "42501" } }) });
     app = await appPromise;
     const response = await app.inject({ method: "POST", url: `/api/invoices/milestones/${milestoneId}/create`, headers: { authorization: "Bearer user-access-token" } });
@@ -287,7 +356,7 @@ describe("PayPal Sandbox REST boundary", () => {
     const events: string[] = [];
     const fetch = clientFetch(async (url, init) => {
       events.push(`provider:${url}`);
-      if (url.endsWith("/v1/oauth2/token")) return jsonResponse({ access_token: "token", expires_in: 3600 });
+      if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse();
       if (url.endsWith("/v2/invoicing/invoices/PAYPAL-INV-1/send")) {
         expect(init?.body).toBe(JSON.stringify({ send_to_recipient: true }));
         return new Response(null, { status: 202 });
@@ -321,7 +390,7 @@ describe("PayPal Sandbox REST boundary", () => {
     const urls: string[] = [];
     const fetch = clientFetch(async (url) => {
       urls.push(url);
-      if (url.endsWith("/v1/oauth2/token")) return jsonResponse({ access_token: "token", expires_in: 3600 });
+      if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse();
       if (url.endsWith("/v2/invoicing/invoices/PAYPAL-INV-1/send")) throw new TypeError("socket closed after send");
       return jsonResponse(providerInvoice({ status: "SENT" }));
     });
@@ -344,7 +413,7 @@ describe("PayPal Sandbox REST boundary", () => {
   });
 
   it("does not repeat a send when an active or completed database claim already exists", async () => {
-    const fetch = vi.fn(async () => jsonResponse({ access_token: "token", expires_in: 3600 }));
+    const fetch = vi.fn(async () => paypalOAuthResponse());
     const { appPromise } = appFixture({
       fetch,
       serviceRpc: async () => ({ data: { claimed: false, invoice: persistedSent, claim: { id: claimId, state: "completed" } }, error: null }),
@@ -391,7 +460,7 @@ describe("PayPal Sandbox REST boundary", () => {
     const calls: string[] = [];
     const fetch = clientFetch(async (url) => {
       calls.push(url);
-      if (url.endsWith("/v1/oauth2/token")) return jsonResponse({ access_token: "token", expires_in: 3600 });
+      if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse();
       if (url.endsWith("/v2/invoicing/invoices")) throw new TypeError("connection ended after write");
       return jsonResponse({ items: [], total_pages: 1 });
     });
@@ -401,7 +470,7 @@ describe("PayPal Sandbox REST boundary", () => {
       serviceRpc: async (name, values) => {
         if (name === "begin_paypal_invoice_create") return { data: {
           claimed: true, invoice: claimedInvoice, claim: { id: claimId, state: "claimed" },
-          clientEmail: "client@example.test", milestoneTitle: "Discovery",
+          clientEmail: "release-test-user-002@example.invalid", milestoneTitle: "Discovery",
         }, error: null };
         if (name === "finalize_paypal_operation") {
           outcomes.push(String(values?.p_outcome));
@@ -433,7 +502,7 @@ describe("PayPal Sandbox REST boundary", () => {
       serviceRpc: async (name, values) => {
         if (name === "begin_paypal_invoice_create") return { data: {
           claimed: true, invoice: claimedInvoice, claim: { id: claimId, state: "claimed" },
-          clientEmail: "client@example.test", milestoneTitle: "Discovery",
+          clientEmail: "release-test-user-002@example.invalid", milestoneTitle: "Discovery",
         }, error: null };
         if (name === "finalize_paypal_operation") {
           outcomes.push(String(values?.p_outcome));
@@ -455,7 +524,7 @@ describe("PayPal Sandbox REST boundary", () => {
 
   it("does not process a webhook when PayPal verification fails", async () => {
     const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
-      ? jsonResponse({ access_token: "token", expires_in: 3600 })
+      ? paypalOAuthResponse()
       : jsonResponse({ verification_status: "FAILURE" }));
     const { appPromise, serviceRpc } = appFixture({ fetch });
     app = await appPromise;
@@ -478,43 +547,173 @@ describe("PayPal Sandbox REST boundary", () => {
     expect(serviceRpc).not.toHaveBeenCalled();
   });
 
-  it("re-reads an invoice after webhook verification and persists only the authoritative state", async () => {
-    const paths: string[] = [];
-    const fetch = clientFetch(async (url) => {
-      paths.push(url);
-      if (url.endsWith("/v1/oauth2/token")) return jsonResponse({ access_token: "token", expires_in: 3600 });
-      if (url.endsWith("/v1/notifications/verify-webhook-signature")) return jsonResponse({ verification_status: "SUCCESS" });
-      return jsonResponse(providerInvoice({ status: "PAID", payment_date: "2026-10-29T12:30:00Z" }));
+  it("rejects a malformed transmission timestamp before signature verification", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse({ verification_status: "SUCCESS" }));
+    const { appPromise, serviceRpc } = appFixture({ fetch });
+    app = await appPromise;
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-bad-time") , "paypal-transmission-time": "not-a-timestamp" },
+      payload: { id: "event-bad-time", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
     });
-    const { appPromise, serviceRpc } = appFixture({
-      fetch,
-      serviceRpc: async (name) => name === "apply_verified_paypal_webhook"
-        ? { data: { duplicate: false, matched: true, invoiceId, status: "paid" }, error: null }
-        : { data: null, error: null },
-    });
+
+    expect(response.statusCode).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(serviceRpc).not.toHaveBeenCalled();
+  });
+
+  it("bounds the cold PayPal OAuth/signature-verification transport and does not enqueue on timeout", async () => {
+    const fetch = clientFetch(async (_url, init) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    }));
+    const { appPromise, serviceRpc } = appFixture({ fetch, paypalWebhookVerificationTimeoutMs: 5 });
     app = await appPromise;
 
     const response = await app.inject({
       method: "POST",
       url: "/api/webhooks/paypal",
-      headers: {
-        "paypal-auth-algo": "SHA256withRSA",
-        "paypal-cert-url": "https://api-m.sandbox.paypal.com/cert",
-        "paypal-transmission-id": "transmission-2",
-        "paypal-transmission-sig": "signature",
-        "paypal-transmission-time": "2026-10-29T12:00:00Z",
-      },
-      payload: { id: "event-2", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1", status: "SENT" } },
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-provider-timeout") },
+      payload: { id: "event-provider-timeout", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
+    });
+
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual({ error: "PayPal Sandbox could not be reached. Try again after checking the integration status." });
+    expect(serviceRpc).not.toHaveBeenCalled();
+  });
+
+  it("preserves the exact signed event JSON and acknowledges only after durable queue acceptance", async () => {
+    const requests: Array<{ url: string; body: string | undefined }> = [];
+    const fetch = clientFetch(async (url, init) => {
+      requests.push({ url, body: typeof init?.body === "string" ? init.body : undefined });
+      if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse();
+      if (url.endsWith("/v1/notifications/verify-webhook-signature")) return jsonResponse({ verification_status: "SUCCESS" });
+      throw new Error("The webhook request must not fetch the provider invoice inline.");
+    });
+    const { appPromise, serviceRpc } = appFixture({
+      fetch,
+      serviceRpc: async (name) => name === "enqueue_verified_paypal_webhook"
+        ? { data: { duplicate: false, processed: false, pending: true }, error: null }
+        : { data: null, error: null },
+    });
+    app = await appPromise;
+    const rawEvent = '{ "id":"event-2", "event_type":"INVOICING.INVOICE.PAID", "resource": { "id":"PAYPAL-INV-1", "status":"SENT" } }';
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-2") },
+      payload: rawEvent,
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({ verified: true, accepted: true, duplicate: false });
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://api-m.sandbox.paypal.com/v1/oauth2/token",
+      "https://api-m.sandbox.paypal.com/v1/notifications/verify-webhook-signature",
+    ]);
+    expect(requests[1]?.body).toContain(`"webhook_event":${rawEvent}`);
+    expect(serviceRpc).toHaveBeenCalledTimes(1);
+    expect(serviceRpc).toHaveBeenCalledWith("enqueue_verified_paypal_webhook", expect.objectContaining({
+      p_provider_event_id: "event-2",
+      p_event_type: "INVOICING.INVOICE.PAID",
+      p_resource_id: "PAYPAL-INV-1",
+    }));
+  });
+
+  it("returns a retryable response when durable enqueue fails", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse({ verification_status: "SUCCESS" }));
+    const { appPromise, serviceRpc } = appFixture({
+      fetch,
+      serviceRpc: async () => ({ data: null, error: { code: "08006" } }),
+    });
+    app = await appPromise;
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-db-failure") },
+      payload: { id: "event-db-failure", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: "The verified PayPal event could not be stored. PayPal may retry delivery." });
+    expect(serviceRpc).toHaveBeenCalledTimes(1);
+    expect(serviceRpc).toHaveBeenCalledWith("enqueue_verified_paypal_webhook", expect.any(Object));
+  });
+
+  it("does not acknowledge an enqueue call that exceeds its storage deadline", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse({ verification_status: "SUCCESS" }));
+    const { appPromise, serviceRpc } = appFixture({
+      fetch,
+      paypalWebhookEnqueueTimeoutMs: 5,
+      serviceRpc: () => new Promise(() => undefined),
+    });
+    app = await appPromise;
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-timeout") },
+      payload: { id: "event-timeout", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
+    });
+
+    expect(response.statusCode).toBe(503);
+    expect(serviceRpc).toHaveBeenCalledTimes(1);
+  });
+
+  it("verifies redeliveries then relies on durable event-ID deduplication", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse({ verification_status: "SUCCESS" }));
+    const { appPromise, serviceRpc } = appFixture({
+      fetch,
+      serviceRpc: async () => ({ data: { duplicate: true, processed: true, pending: false }, error: null }),
+    });
+    app = await appPromise;
+    const event = { id: "event-duplicate", event_type: "INVOICING.INVOICE.SENT", resource: { id: "PAYPAL-INV-1" } };
+    const deliver = (transmissionId: string) => app!.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders(transmissionId) },
+      payload: event,
+    });
+    const [first, redelivery] = await Promise.all([deliver("transmission-first"), deliver("transmission-redelivery")]);
+
+    expect(first.statusCode).toBe(202);
+    expect(redelivery.statusCode).toBe(202);
+    expect(redelivery.json()).toEqual({ verified: true, accepted: true, duplicate: true });
+    expect(serviceRpc).toHaveBeenCalledTimes(2);
+  });
+
+  it("verifies but does not enqueue unsupported event types", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse({ verification_status: "SUCCESS" }));
+    const { appPromise, serviceRpc } = appFixture({ fetch });
+    app = await appPromise;
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-unsupported") },
+      payload: { id: "event-unrelated", event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { id: "PAYMENT-1" } },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ verified: true, processed: true, result: { matched: true, status: "paid" } });
-    expect(paths).toContain("https://api-m.sandbox.paypal.com/v2/invoicing/invoices/PAYPAL-INV-1");
-    expect(serviceRpc).toHaveBeenCalledWith("apply_verified_paypal_webhook", expect.objectContaining({
-      p_provider_event_id: "event-2",
-      p_provider_status: "PAID",
-      p_invoice_status: "paid",
-      p_paid_at: "2026-10-29T12:30:00Z",
-    }));
+    expect(response.json()).toEqual({ verified: true, accepted: false });
+    expect(serviceRpc).not.toHaveBeenCalled();
   });
 });
+
+function webhookHeaders(transmissionId: string) {
+  return {
+    "paypal-auth-algo": "SHA256withRSA",
+    "paypal-cert-url": "https://api-m.sandbox.paypal.com/cert",
+    "paypal-transmission-id": transmissionId,
+    "paypal-transmission-sig": "signature",
+    "paypal-transmission-time": "2026-11-02T12:00:00Z",
+  };
+}

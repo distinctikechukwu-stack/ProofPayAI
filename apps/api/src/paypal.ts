@@ -1,11 +1,20 @@
 import { z } from "zod";
+import { isDeepStrictEqual } from "node:util";
 
 export const PAYPAL_SANDBOX_BASE_URL = "https://api-m.sandbox.paypal.com";
 const PAYPAL_REQUEST_TIMEOUT_MS = 15_000;
+const PAYPAL_WEBHOOK_REQUEST_TIMEOUT_MS = 8_000;
+const PAYPAL_INVOICE_WRITE_SCOPES = new Set([
+  "https://uri.paypal.com/services/invoicing/invoices/readwrite",
+  "https://uri.paypal.com/services/invoicing",
+  "https://api.paypal.com/v1/invoicing:*",
+]);
 
 const oauthResponseSchema = z.object({
   access_token: z.string().min(1),
   expires_in: z.number().int().positive(),
+  token_type: z.string().optional(),
+  scope: z.string().optional(),
 });
 
 const paypalErrorSchema = z.object({
@@ -37,6 +46,7 @@ export interface PaypalConfig {
   clientId: string;
   clientSecret: string;
   webhookId?: string;
+  webhookVerificationTimeoutMs?: number;
   fetch?: typeof fetch;
 }
 
@@ -59,6 +69,13 @@ export class PaypalReadError extends Error {
   constructor() {
     super("PayPal Sandbox could not be reached. Try again after checking the integration status.");
     this.name = "PaypalReadError";
+  }
+}
+
+export class PaypalPermissionError extends Error {
+  constructor() {
+    super("PayPal Sandbox OAuth token is missing the required Invoicing permission.");
+    this.name = "PaypalPermissionError";
   }
 }
 
@@ -116,6 +133,7 @@ function safeProviderMessage(value: unknown): { message: string; debugId: string
 }
 
 export function normalizePaypalError(error: unknown): { status: number; message: string } {
+  if (error instanceof PaypalPermissionError) return { status: 502, message: "PayPal Sandbox credentials or invoice permissions need attention." };
   if (error instanceof PaypalApiError) {
     if (error.status === 401 || error.status === 403) return { status: 502, message: "PayPal Sandbox credentials or invoice permissions need attention." };
     if (error.status === 429) return { status: 503, message: "PayPal Sandbox is temporarily rate limited. Try again later." };
@@ -234,25 +252,33 @@ export class PaypalClient {
   async verifyWebhook(
     event: unknown,
     headers: { authAlgo: string; certUrl: string; transmissionId: string; transmissionSignature: string; transmissionTime: string },
+    rawEventJson: string,
   ): Promise<boolean> {
     if (!isRealValue(this.config.webhookId)) throw new Error("A PayPal Sandbox webhook ID is not configured.");
+    let rawEvent: unknown;
+    try {
+      rawEvent = JSON.parse(rawEventJson) as unknown;
+    } catch {
+      throw new PaypalReadError();
+    }
+    if (!isDeepStrictEqual(rawEvent, event)) throw new PaypalReadError();
     const response = await this.request("/v1/notifications/verify-webhook-signature", {
       method: "POST",
-      body: {
+      serializedBody: `${JSON.stringify({
         auth_algo: headers.authAlgo,
         cert_url: headers.certUrl,
         transmission_id: headers.transmissionId,
         transmission_sig: headers.transmissionSignature,
         transmission_time: headers.transmissionTime,
         webhook_id: this.config.webhookId,
-        webhook_event: event,
-      },
+      }).slice(0, -1)},"webhook_event":${rawEventJson}}`,
+      timeoutMs: this.config.webhookVerificationTimeoutMs ?? PAYPAL_WEBHOOK_REQUEST_TIMEOUT_MS,
       expected: [200],
     });
     return webhookVerificationSchema.parse(response).verification_status === "SUCCESS";
   }
 
-  private async getAccessToken(): Promise<string> {
+  private async getAccessToken(timeoutMs = PAYPAL_REQUEST_TIMEOUT_MS): Promise<string> {
     if (this.token && this.token.refreshAt > Date.now()) return this.token.value;
     if (this.tokenRequest) return this.tokenRequest;
     this.tokenRequest = (async () => {
@@ -260,7 +286,7 @@ export class PaypalClient {
       try {
         response = await this.requestFetch(`${PAYPAL_SANDBOX_BASE_URL}/v1/oauth2/token`, {
           method: "POST",
-          signal: AbortSignal.timeout(PAYPAL_REQUEST_TIMEOUT_MS),
+          signal: AbortSignal.timeout(timeoutMs),
           headers: {
             Authorization: `Basic ${Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString("base64")}`,
             "Content-Type": "application/x-www-form-urlencoded",
@@ -274,6 +300,11 @@ export class PaypalClient {
       if (!response.ok) this.throwProviderError(response.status, body);
       const parsed = oauthResponseSchema.safeParse(body);
       if (!parsed.success) throw new PaypalReadError();
+      const grantedScopes = new Set(parsed.data.scope?.trim().split(/\s+/).filter(Boolean) ?? []);
+      if (parsed.data.token_type?.toLowerCase() !== "bearer"
+        || ![...PAYPAL_INVOICE_WRITE_SCOPES].some((scope) => grantedScopes.has(scope))) {
+        throw new PaypalPermissionError();
+      }
       this.token = { value: parsed.data.access_token, refreshAt: Date.now() + Math.max(0, parsed.data.expires_in - 60) * 1000 };
       return parsed.data.access_token;
     })();
@@ -287,22 +318,27 @@ export class PaypalClient {
   private async request(path: string, options: {
     method: "GET" | "POST";
     body?: unknown;
+    serializedBody?: string;
     expected: number[];
     write?: boolean;
     allowEmpty?: boolean;
+    timeoutMs?: number;
   }): Promise<unknown | null> {
-    const token = await this.getAccessToken();
+    const timeoutMs = options.timeoutMs ?? PAYPAL_REQUEST_TIMEOUT_MS;
+    const token = await this.getAccessToken(timeoutMs);
     let response: Response;
     try {
       response = await this.requestFetch(`${PAYPAL_SANDBOX_BASE_URL}${path}`, {
         method: options.method,
-        signal: AbortSignal.timeout(PAYPAL_REQUEST_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
         headers: {
           Authorization: `Bearer ${token}`,
           Accept: "application/json",
-          ...(options.body === undefined ? {} : { "Content-Type": "application/json" }),
+          ...(options.body === undefined && options.serializedBody === undefined ? {} : { "Content-Type": "application/json" }),
         },
-        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+        ...(options.serializedBody === undefined
+          ? options.body === undefined ? {} : { body: JSON.stringify(options.body) }
+          : { body: options.serializedBody }),
       });
     } catch {
       if (options.write) throw new PaypalWriteUnknownError();

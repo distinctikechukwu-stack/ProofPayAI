@@ -125,6 +125,7 @@ create table public.change_requests (
   status text not null default 'pending_analysis' check (status in ('pending_analysis', 'analyzed', 'proposal_ready', 'resolved', 'withdrawn')),
   idempotency_key uuid not null unique,
   created_at timestamptz not null default now(),
+  unique (project_id, id),
   foreign key (project_id, based_on_agreement_version_id) references public.agreement_versions (project_id, id)
 );
 

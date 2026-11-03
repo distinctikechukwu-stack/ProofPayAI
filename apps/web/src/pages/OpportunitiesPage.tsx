@@ -144,7 +144,8 @@ export function OpportunitiesPage() {
   const [offers, setOffers] = useState<Offer[]>([]);
   const [roles, setRoles] = useState<string[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioRef[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [proposalLoadFailed, setProposalLoadFailed] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [search, setSearch] = useState("");
@@ -164,9 +165,20 @@ export function OpportunitiesPage() {
   const isClient = roles.includes("client");
 
   useEffect(() => {
-    if (!user) { setLoading(false); return; }
+    if (!user) {
+      setLoading(false);
+      setSelectedJob(null);
+      setProposals([]);
+      setOffers([]);
+      setPortfolio([]);
+      setRoles([]);
+      return;
+    }
     let active = true;
     setLoading(true); setError("");
+    setSelectedJob(null);
+    setProposals([]);
+    setProposalLoadFailed(false);
     const work: Array<Promise<unknown>> = [
       apiRequest<{ roles: string[]; portfolio?: PortfolioRef[] }>("/api/profile").then((profile) => {
         if (active) { setRoles(profile.roles); setPortfolio(profile.portfolio ?? []); }
@@ -175,7 +187,10 @@ export function OpportunitiesPage() {
     ];
     if (jobId) {
       work.push(apiRequest<{ job: Job }>(`/api/jobs/${encodeURIComponent(jobId)}`).then((response) => { if (active) setSelectedJob(response.job); }));
-      work.push(apiRequest<{ proposals: Proposal[] }>(`/api/jobs/${encodeURIComponent(jobId)}/proposals`).then((response) => { if (active) setProposals(response.proposals); }));
+      work.push(apiRequest<{ proposals: Proposal[] }>(`/api/jobs/${encodeURIComponent(jobId)}/proposals`).then((response) => { if (active) setProposals(response.proposals); }).catch((reason: unknown) => {
+        if (active) setProposalLoadFailed(true);
+        throw reason;
+      }));
     } else {
       work.push(apiRequest<{ jobs: Job[] }>("/api/jobs").then((response) => { if (active) setJobs(response.jobs); }));
       setSelectedJob(null); setProposals([]);
@@ -287,7 +302,7 @@ export function OpportunitiesPage() {
     {showJobEditor && <JobEditor initial={editingJob} onCancel={() => { setShowJobEditor(false); setEditingJob(null); }} onSave={saveJob} />}
     {jobId ? <>
       <Link className="marketplace-back" to="/app/opportunities"><ArrowLeft size={14} /> Back to opportunities</Link>
-      {loading ? <div className="marketplace-empty" role="status">Loading job details…</div> : selectedJob ? <JobDetail
+      {loading ? <div className="marketplace-empty" role="status" aria-busy="true">Loading job and proposal details…</div> : selectedJob ? <JobDetail
         job={selectedJob} isClient={isClient} isFreelancer={isFreelancer} proposals={proposals} offers={offers.filter((offer) => offer.jobId === selectedJob.id)} portfolio={portfolio}
         onFavorite={() => void toggleFavorite(selectedJob)} onChangeStatus={(action) => void changeJobStatus(selectedJob, action)}
         onProposal={async (body, submit) => {
@@ -296,14 +311,15 @@ export function OpportunitiesPage() {
           else { setNotice("Proposal draft saved to your account."); refresh(); }
         }}
         onTransition={(proposalId, action) => void updateProposal(proposalId, action)}
-        onOffer={submitOffer}
+        onOffer={submitOffer} proposalLoadFailed={proposalLoadFailed} onRetry={refresh}
         onRespondOffer={respondOffer}
         onReport={async (reason, details) => {
           await apiRequest(`/api/jobs/${selectedJob.id}/reports`, { method: "POST", body: { reason, details } });
           setNotice("Report sent for review. It is private to you and marketplace administrators.");
         }}
         onEdit={() => { setEditingJob(selectedJob); setShowJobEditor(true); }}
-      /> : <div className="marketplace-empty"><h2>Job not found</h2><p>This listing may be private, closed, or unavailable to your account.</p><Link to="/app/opportunities">Browse open jobs</Link></div>}
+      /> : error ? <div className="marketplace-empty"><h2>Job details unavailable</h2><p>This listing could not be loaded. It may be private, closed, or unavailable to your account.</p><button className="button-secondary" type="button" onClick={refresh}>Retry loading job</button></div>
+        : <div className="marketplace-empty"><h2>Job not found</h2><p>This listing may have been removed or is no longer available.</p><Link to="/app/opportunities">Browse open jobs</Link></div>}
     </> : <>
       {isClient && <div className="marketplace-role-note"><strong>Client account</strong><span>Post and manage a job listing. Review applicants and send offers from the job details.</span></div>}
       <section className="marketplace-toolbar">
@@ -369,7 +385,7 @@ function minorToText(value: string, currency: string) {
 }
 
 function JobDetail({
-  job, isClient, isFreelancer, proposals, offers, portfolio, onFavorite, onChangeStatus, onProposal, onTransition, onOffer, onRespondOffer, onReport, onEdit,
+  job, isClient, isFreelancer, proposals, offers, portfolio, onFavorite, onChangeStatus, onProposal, onTransition, onOffer, onRespondOffer, onReport, onEdit, proposalLoadFailed, onRetry,
 }: {
   job: Job; isClient: boolean; isFreelancer: boolean; proposals: Proposal[]; offers: Offer[]; portfolio: PortfolioRef[];
   onFavorite: () => void; onChangeStatus: (action: "publish" | "close" | "reopen" | "archive" | "delete") => void;
@@ -377,7 +393,7 @@ function JobDetail({
   onTransition: (proposalId: string, action: "submit" | "withdraw" | "shortlist" | "reject" | "invite_interview") => void;
   onOffer: (proposal: Proposal, input: { terms: string; amount: string; timeline: string; key: string }) => Promise<void>;
   onRespondOffer: (offer: Offer, decision: "accept" | "decline") => void;
-  onReport: (reason: string, details: string) => Promise<void>; onEdit: () => void;
+  onReport: (reason: string, details: string) => Promise<void>; onEdit: () => void; proposalLoadFailed: boolean; onRetry: () => void;
 }) {
   const owner = job.isOwner === true;
   const proposalsForJob = proposals.filter((proposal) => proposal.jobId === job.id);
@@ -426,7 +442,8 @@ function JobDetail({
         </form> : <div className="marketplace-submitted-proposal"><p>{ownProposal?.coverLetter ?? "Your draft is saved, but this job is no longer open for new proposals."}</p>{ownProposal && <div className="marketplace-detail-meta"><strong>{displayMinor(ownProposal.quoteMinor, ownProposal.currency)}</strong><span>{ownProposal.timelineDays} day estimate</span><span>{ownProposal.portfolioItemIds.length} portfolio reference(s)</span></div>}{ownProposal && ["submitted", "shortlisted", "interview_invited"].includes(ownProposal.status) && <button className="marketplace-text-action" type="button" onClick={() => onTransition(ownProposal.id, "withdraw")}>Withdraw proposal</button>}{ownProposal?.status === "withdrawn" && <p className="marketplace-inline-note">This application was withdrawn. The one-application-per-job rule prevents a duplicate application.</p>}</div>}
       </section>}
       <ProposalReviewPanel key={job.id} jobId={job.id} jobCurrency={job.currency} proposals={proposalsForJob}
-        clientCanReview={owner && isClient} onTransition={onTransition} onOffer={onOffer} />
+        proposalLoadFailed={proposalLoadFailed} clientCanReview={owner && isClient} onRetry={onRetry}
+        onTransition={onTransition} onOffer={onOffer} />
       {!owner && isFreelancer && job.status === "published" && <button className="marketplace-text-action marketplace-report-toggle" type="button" onClick={() => setReportOpen(!reportOpen)}><Flag size={13} /> Report a suspicious listing</button>}
       {reportOpen && <form className="marketplace-report-form" onSubmit={(event) => { event.preventDefault(); void onReport(reportReason, reportDetails).then(() => { setReportOpen(false); setMessage("Thank you. The report was recorded for administrator review."); }).catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : "The report could not be sent.")); }}><label>Reason<select value={reportReason} onChange={(event) => setReportReason(event.target.value)}><option value="suspicious">Suspicious activity</option><option value="misleading">Misleading listing</option><option value="prohibited">Prohibited work</option><option value="other">Other</option></select></label><label>Details<textarea maxLength={2000} rows={3} value={reportDetails} onChange={(event) => setReportDetails(event.target.value)} /></label><button className="button-secondary">Send private report</button>{message && <span role="status">{message}</span>}</form>}
     </article>
@@ -435,9 +452,10 @@ function JobDetail({
 }
 
 export function ProposalReviewPanel({
-  jobId, jobCurrency, proposals, clientCanReview, onTransition, onOffer,
+  jobId, jobCurrency, proposals, proposalLoadFailed, clientCanReview, onRetry, onTransition, onOffer,
 }: {
-  jobId: string; jobCurrency: string; proposals: Proposal[]; clientCanReview: boolean;
+  jobId: string; jobCurrency: string; proposals: Proposal[]; proposalLoadFailed: boolean; clientCanReview: boolean;
+  onRetry: () => void;
   onTransition: (proposalId: string, action: "submit" | "withdraw" | "shortlist" | "reject" | "invite_interview") => void;
   onOffer: (proposal: Proposal, input: { terms: string; amount: string; timeline: string; key: string }) => Promise<void>;
 }) {
@@ -481,43 +499,46 @@ export function ProposalReviewPanel({
   if (!clientCanReview) return null;
   return <section className="marketplace-proposal-box" aria-labelledby="proposal-review-heading">
     <div className="marketplace-section-heading"><div><span className="eyebrow">APPLICANTS</span><h2 id="proposal-review-heading">Proposal review</h2><p>Compare proposals for this job, then use the existing review and offer actions on each application.</p></div><span>{jobProposals.length} applicant{jobProposals.length === 1 ? "" : "s"}</span></div>
-    {jobProposals.length ? <>
+    {proposalLoadFailed ? <div className="marketplace-proposal-error"><p role="status">Proposal details could not be loaded. They remain hidden until the request succeeds.</p><button className="button-secondary" type="button" onClick={onRetry}>Retry proposals</button></div> : jobProposals.length ? <>
       <div className="marketplace-review-toolbar">
         <label>Filter by status<select aria-label="Filter proposals by status" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="draft">Draft</option><option value="submitted">Submitted</option><option value="shortlisted">Shortlisted</option><option value="interview_invited">Interview requested</option><option value="rejected">Rejected</option><option value="withdrawn">Withdrawn</option><option value="accepted">Accepted</option></select></label>
         <label>Sort proposals<select aria-label="Sort proposals" value={sort} onChange={(event) => setSort(event.target.value as ProposalSort)}><option value="recent">Newest first</option><option value="quote_low">Quote: low to high by currency</option><option value="quote_high">Quote: high to low by currency</option><option value="timeline">Shortest timeline</option></select></label>
-        <p aria-live="polite">{selectedProposals.length} of {maxComparedProposals} selected for comparison</p>
+        <p className="marketplace-selection-count" aria-live="polite" aria-atomic="true">{selectedProposals.length} of {maxComparedProposals} selected for comparison. Selections stay active while you sort or filter.</p>
+        {maxReached && <p id="proposal-comparison-limit" className="marketplace-comparison-limit">Limit reached. Remove a selected proposal before adding another.</p>}
+        {selectedProposals.length > 1 && <a className="marketplace-comparison-jump" href="#proposal-comparison-heading" aria-controls="proposal-comparison-panel">Jump to comparison</a>}
         {selectedProposals.length > 0 && <button className="marketplace-text-action" type="button" onClick={() => setSelectedIds([])}>Clear comparison selection</button>}
       </div>
-      {visibleProposals.length ? <div className="marketplace-applicant-list" role="list" aria-label="Proposals for this job">{visibleProposals.map((proposal, index) => {
+      {visibleProposals.length ? <div className="marketplace-applicant-list" role="list" aria-label="Proposals for this job">{visibleProposals.map((proposal) => {
+        const proposalNumber = jobProposals.findIndex((item) => item.id === proposal.id) + 1;
         const status = proposalStatus(proposal);
         const count = proposalPortfolioCount(proposal);
         const selected = activeSelectedIds.includes(proposal.id);
         const offerable = ["submitted", "shortlisted", "interview_invited"].includes(status);
         return <article className="marketplace-applicant-card" role="listitem" key={proposal.id}>
-          <div className="marketplace-proposal-select-row"><label><input type="checkbox" aria-label={`Select proposal ${index + 1} for comparison`} checked={selected} disabled={!selected && maxReached} onChange={(event) => selectProposal(proposal, event.target.checked)} /> Add to comparison</label></div>
-          <div className="marketplace-applicant-top"><span className="marketplace-avatar-small" aria-hidden="true">F</span><div><strong>Freelancer applicant</strong><small>{proposalAmount(proposal)} · {proposalTimeline(proposal)}</small></div><StatusPill status={status} /></div>
+          <div className="marketplace-proposal-select-row"><label><input type="checkbox" aria-label={(selected ? "Remove proposal " : "Select proposal ") + proposalNumber + " for comparison"} checked={selected} disabled={!selected && maxReached} aria-describedby={maxReached && !selected ? "proposal-comparison-limit" : undefined} onChange={(event) => selectProposal(proposal, event.target.checked)} /> {selected ? "Remove from comparison" : "Add to comparison"}</label></div>
+          <div className="marketplace-applicant-top"><span className="marketplace-avatar-small" aria-hidden="true">F</span><div><strong>Applicant proposal {proposalNumber}</strong><small>{proposalAmount(proposal)} · {proposalTimeline(proposal)}</small></div><StatusPill status={status} /></div>
           <p>{proposalCoverLetter(proposal)}</p>
-          <span className="marketplace-inline-note">{count ? `${count} portfolio reference(s) attached. Titles and details are not available in this view.` : "No portfolio references attached."}</span>
+          <span className="marketplace-inline-note">{count ? `${count} portfolio reference(s) attached. Titles and links are not available in this view yet.` : "No portfolio references attached."}</span>
           {offerable && <div className="marketplace-form-actions"><button className="button-secondary" type="button" onClick={() => onTransition(proposal.id, "shortlist")}>Shortlist</button><button className="button-secondary" type="button" onClick={() => onTransition(proposal.id, "invite_interview")}>Mark interview requested</button><button className="marketplace-text-action" type="button" onClick={() => onTransition(proposal.id, "reject")}>Reject</button></div>}
           {offerable && <OfferComposer value={initialOffer(proposal)} onChange={(field, value) => patchOffer(proposal, field, value)} onSubmit={() => void onOffer(proposal, initialOffer(proposal)).catch((reason: unknown) => setMessage(reason instanceof Error ? reason.message : "Offer could not be sent."))} />}
           {message && <p role="status" className="marketplace-inline-note">{message}</p>}
         </article>;
-      })}</div> : <p className="marketplace-empty-inline">No proposals match this status filter.</p>}
-    </> : <p className="marketplace-empty-inline">No proposals are available for this job.</p>}
+      })}</div> : <p className="marketplace-empty-inline" role="status">No proposals match this status filter.</p>}
+    </> : <p className="marketplace-empty-inline" role="status">No proposals yet. Applicants' submissions will appear here.</p>}
     {selectedProposals.length === 1 && <p className="marketplace-inline-note">Select one more proposal to open the side-by-side comparison.</p>}
-    {selectedProposals.length > 1 && <section className="marketplace-comparison-panel" aria-labelledby="proposal-comparison-heading">
-      <div className="marketplace-section-heading"><div><span className="eyebrow">READ-ONLY VIEW</span><h3 id="proposal-comparison-heading">Side-by-side comparison</h3><p>Review submitted terms alongside each other. Hiring decisions remain in the proposal actions above.</p></div></div>
+    {selectedProposals.length > 1 && <section id="proposal-comparison-panel" className="marketplace-comparison-panel" aria-labelledby="proposal-comparison-heading">
+      <div className="marketplace-section-heading"><div><span className="eyebrow">READ-ONLY VIEW</span><h3 id="proposal-comparison-heading" tabIndex={-1}>Side-by-side comparison</h3><p>Review submitted terms alongside each other. Hiring decisions remain in the proposal actions above.</p></div></div>
       <div className="marketplace-comparison-grid" role="list" aria-label="Selected proposals for comparison">{selectedProposals.map((proposal, index) => {
         const status = proposalStatus(proposal);
         const count = proposalPortfolioCount(proposal);
         return <article className="marketplace-comparison-card" role="listitem" key={proposal.id}>
-          <header><strong>Selected proposal {index + 1}</strong><StatusPill status={status} /><button className="marketplace-text-action" type="button" aria-label={`Remove selected proposal ${index + 1}`} onClick={() => removeFromComparison(proposal.id)}>Remove</button></header>
+          <header><h4>Comparison proposal {index + 1}</h4><StatusPill status={status} /><button className="marketplace-text-action" type="button" aria-label={`Remove selected proposal ${index + 1}`} onClick={() => removeFromComparison(proposal.id)}>Remove</button></header>
           <dl>
             <div><dt>Quoted amount</dt><dd>{proposalAmount(proposal)}</dd></div>
             <div><dt>Delivery timeline</dt><dd>{proposalTimeline(proposal)}</dd></div>
             <div><dt>Proposal status</dt><dd>{status.replaceAll("_", " ") || "Status not provided"}</dd></div>
             <div><dt>Cover letter</dt><dd className="marketplace-comparison-letter">{proposalCoverLetter(proposal)}</dd></div>
-            <div><dt>Portfolio references</dt><dd>{count ? `${count} attached; titles and details are not available in this view.` : "No portfolio references attached."}</dd></div>
+            <div><dt>Portfolio references</dt><dd>{count ? `${count} attached; titles and links are not available in this view yet.` : "No portfolio references attached."}</dd></div>
           </dl>
         </article>;
       })}</div>

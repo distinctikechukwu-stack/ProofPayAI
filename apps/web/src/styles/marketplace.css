@@ -347,3 +347,28 @@
 .settings-help { flex-wrap:wrap; }
 .settings-help .button-text { margin-left:auto; }
 @media (max-width:560px) { .moderation-card-heading { flex-wrap:wrap; }.moderation-card-heading .status-pill { margin-left:44px; }.account-deletion-form { align-items:stretch; flex-direction:column; }.account-deletion-form label,.account-deletion-form button { width:100%; } }
+/* Proposal comparison accessibility and mobile refinements */
+.marketplace-review-toolbar label { font-size:11px; }
+.marketplace-review-toolbar select { min-height:44px; font-size:12px; }
+.marketplace-review-toolbar .marketplace-selection-count,.marketplace-review-toolbar .marketplace-comparison-limit { grid-column:1/-1; margin:0; color:#52647a; font-size:11px; line-height:1.5; }
+.marketplace-comparison-limit { padding:8px 10px; border:1px solid #e6d7af; border-radius:7px; color:#665124; background:#fffaf0; }
+.marketplace-comparison-jump { display:inline-flex; align-items:center; justify-self:start; min-height:40px; padding:7px 10px; border:1px solid #cbd9ea; border-radius:7px; color:#315f9b; background:#f5f8fc; font-size:11px; font-weight:700; text-decoration:none; }
+.marketplace-proposal-select-row { justify-content:flex-start; }
+.marketplace-proposal-select-row label { min-height:44px; padding:5px 8px; gap:9px; border-radius:6px; color:#42566e; font-size:11px; }
+.marketplace-proposal-select-row input { width:18px; height:18px; margin:0; }
+.marketplace-proposal-select-row input:disabled { opacity:.6; }
+.marketplace-comparison-card>header { font-size:12px; }
+.marketplace-comparison-card>header h4 { margin:0; color:#405771; font-size:12px; }
+.marketplace-comparison-card>header button { min-height:40px; padding:6px 8px; font-size:11px; }
+.marketplace-comparison-card dt { color:#687990; font-size:11px; }
+.marketplace-comparison-card dd { color:#40546c; font-size:12px; line-height:1.55; }
+.marketplace-applicant-card .marketplace-form-actions button,.marketplace-applicant-card .marketplace-offer-composer button { min-height:40px; }
+.marketplace-proposal-error { display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:12px; border:1px solid #efd7d5; border-radius:8px; background:#fff8f7; }
+.marketplace-proposal-error p { flex:1 1 240px; margin:0; color:#7b4541; font-size:12px; line-height:1.5; }
+.marketplace-proposal-error button,.marketplace-empty button { min-height:44px; }
+.marketplace-review-toolbar select:focus-visible,.marketplace-proposal-select-row input:focus-visible,.marketplace-comparison-jump:focus-visible,.marketplace-comparison-card button:focus-visible,.marketplace-proposal-error button:focus-visible,.marketplace-empty button:focus-visible { outline:3px solid #245ca7; outline-offset:3px; }
+@media (max-width:480px) {
+  .marketplace-proposal-select-row { margin:0 0 8px; }
+  .marketplace-review-toolbar { gap:12px; }
+  .marketplace-comparison-card { padding:12px; }
+}

@@ -37,10 +37,12 @@ function renderMarketplace({
     makeProposal({ id: "proposal-2", quoteMinor: "30000", timelineDays: 8, status: "shortlisted", createdAt: "2026-11-01T09:00:00.000Z", coverLetter: "I can deliver this in a focused first release." }),
     makeProposal({ id: "proposal-3", quoteMinor: "90000", timelineDays: 20, status: "interview_invited", createdAt: "2026-11-01T08:00:00.000Z", coverLetter: "I will document the work and provide review checkpoints." }),
   ],
+  proposalLoader = async () => ({ proposals }),
 }: {
   roles?: string[];
   isOwner?: boolean;
   proposals?: Proposal[];
+  proposalLoader?: () => Promise<{ proposals: Proposal[] }>;
 } = {}) {
   mocks.apiRequest.mockImplementation(async (path: string) => {
     if (path === "/api/profile") return { roles, portfolio: [] };
@@ -52,7 +54,8 @@ function renderMarketplace({
       hourlyRateMinMinor: null, hourlyRateMaxMinor: null, currency: "USD", estimatedDays: 30,
       status: "published", createdAt: "2026-10-30T10:00:00.000Z",
     } };
-    if (path === `/api/jobs/${jobId}/proposals`) return { proposals };
+    if (path === `/api/jobs/${jobId}/proposals`) return proposalLoader();
+    if (typeof path === "string" && path.startsWith("/api/proposals/") && path.endsWith("/transition")) return {};
     if (typeof path !== "string") return {};
     throw new Error("Unexpected API request: " + String(path) + "\n" + new Error().stack);
   });
@@ -79,7 +82,7 @@ describe("client proposal comparison", () => {
     expect(within(comparison).getByText("12 days")).toBeInTheDocument();
     expect(within(comparison).getAllByText("submitted")).toHaveLength(2);
     expect(within(comparison).getByText("I will deliver the requested work with clear review milestones.")).toBeInTheDocument();
-    expect(within(comparison).getAllByText(/1 attached; titles and details are not available/i)).toHaveLength(2);
+    expect(within(comparison).getAllByText(/1 attached; titles and links are not available in this view yet/i)).toHaveLength(2);
     expect(within(comparison).queryByRole("button", { name: /shortlist/i })).not.toBeInTheDocument();
 
     expect(screen.getAllByRole("button", { name: "Shortlist" })).toHaveLength(3);
@@ -127,6 +130,9 @@ describe("client proposal comparison", () => {
     expect(within(comparison).getByText("No portfolio references attached.")).toBeInTheDocument();
     expect(comparison).toHaveClass("marketplace-comparison-grid");
     expect(marketplaceStyles).toMatch(/@media\s*\(max-width:\s*480px\)[\s\S]*?\.marketplace-review-toolbar,\.marketplace-comparison-grid\s*\{\s*grid-template-columns:\s*1fr;/);
+    expect(marketplaceStyles).toMatch(/\.marketplace-review-toolbar select \{\s*min-height:44px; font-size:12px;/);
+    expect(marketplaceStyles).toMatch(/\.marketplace-review-toolbar select:focus-visible[\s\S]*outline:3px solid/);
+    expect(marketplaceStyles).toMatch(/\.marketplace-proposal-select-row label \{ min-height:44px;/);
   });
 
   it.each([
@@ -153,5 +159,103 @@ describe("client proposal comparison", () => {
     await user.click(screen.getByRole("checkbox", { name: "Select proposal 1 for comparison" }));
     expect(screen.queryByRole("list", { name: "Selected proposals for comparison" })).not.toBeInTheDocument();
     expect(screen.getByText(/select one more proposal/i)).toBeInTheDocument();
+  });
+
+  it("keeps selected proposals through sorting and filtering and supports both deselection controls", async () => {
+    const user = userEvent.setup();
+    renderMarketplace();
+    await screen.findByRole("heading", { name: "Proposal review" });
+
+    await user.click(screen.getByRole("checkbox", { name: "Select proposal 1 for comparison" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select proposal 2 for comparison" }));
+    expect(screen.getByRole("link", { name: "Jump to comparison" })).toHaveAttribute("href", "#proposal-comparison-heading");
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Sort proposals" }), "quote_low");
+    const proposalList = screen.getByRole("list", { name: "Proposals for this job" });
+    expect(within(proposalList).getAllByRole("checkbox").filter((checkbox) => (checkbox as HTMLInputElement).checked)).toHaveLength(2);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter proposals by status" }), "shortlisted");
+    expect(within(proposalList).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(proposalList).getByRole("checkbox", { name: "Remove proposal 2 for comparison" })).toBeChecked();
+    expect(within(screen.getByRole("list", { name: "Selected proposals for comparison" })).getAllByRole("listitem")).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: "Remove selected proposal 1" }));
+    expect(screen.getByText(/1 of 4 selected for comparison/)).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Selected proposals for comparison" })).not.toBeInTheDocument();
+    expect(within(proposalList).getByRole("checkbox", { name: "Remove proposal 2 for comparison" })).toBeChecked();
+
+    await user.click(within(proposalList).getByRole("checkbox", { name: "Remove proposal 2 for comparison" }));
+    expect(screen.getByText(/0 of 4 selected for comparison/)).toBeInTheDocument();
+    expect(within(proposalList).getByRole("checkbox", { name: "Select proposal 2 for comparison" })).not.toBeChecked();
+    expect(screen.queryByRole("link", { name: "Jump to comparison" })).not.toBeInTheDocument();
+  });
+
+  it("supports tab and space selection, explains the four-proposal limit, and keeps selected rows removable", async () => {
+    const user = userEvent.setup();
+    const proposals = Array.from({ length: 5 }, (_, index) => makeProposal({
+      id: "proposal-limit-" + index,
+      quoteMinor: String(10000 + index * 1000),
+    }));
+    renderMarketplace({ proposals });
+    await screen.findByRole("heading", { name: "Proposal review" });
+
+    screen.getByRole("link", { name: "Back to opportunities" }).focus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Close applications" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("combobox", { name: "Filter proposals by status" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("combobox", { name: "Sort proposals" })).toHaveFocus();
+    await user.tab();
+
+    const proposalList = screen.getByRole("list", { name: "Proposals for this job" });
+    const first = within(proposalList).getByRole("checkbox", { name: "Select proposal 1 for comparison" });
+    expect(first).toHaveFocus();
+    await user.keyboard(" ");
+    expect(first).toBeChecked();
+    await user.click(within(proposalList).getByRole("checkbox", { name: "Select proposal 2 for comparison" }));
+    await user.click(within(proposalList).getByRole("checkbox", { name: "Select proposal 3 for comparison" }));
+    await user.click(within(proposalList).getByRole("checkbox", { name: "Select proposal 4 for comparison" }));
+
+    expect(screen.getByText(/4 of 4 selected for comparison/)).toBeInTheDocument();
+    expect(screen.getByText(/Limit reached\. Remove a selected proposal before adding another\./)).toBeInTheDocument();
+    const fifth = within(proposalList).getByRole("checkbox", { name: "Select proposal 5 for comparison" });
+    expect(fifth).toBeDisabled();
+    expect(fifth).toHaveAttribute("aria-describedby", "proposal-comparison-limit");
+    expect(within(proposalList).getByRole("checkbox", { name: "Remove proposal 1 for comparison" })).toBeEnabled();
+  });
+
+  it("announces loading, hides stale proposal data after a failed reload, and supports retry", async () => {
+    const user = userEvent.setup();
+    const proposal = makeProposal({ coverLetter: "Private proposal content for reload recovery." });
+    let loadCount = 0;
+    let resolveInitial: ((value: { proposals: Proposal[] }) => void) | undefined;
+    const proposalLoader = () => {
+      loadCount += 1;
+      if (loadCount === 1) return new Promise<{ proposals: Proposal[] }>((resolve) => { resolveInitial = resolve; });
+      if (loadCount === 2) return Promise.reject(new Error("Proposal lookup failed."));
+      return Promise.resolve({ proposals: [proposal] });
+    };
+    renderMarketplace({ proposals: [proposal], proposalLoader });
+
+    expect(screen.getByRole("status")).toHaveTextContent("Loading job and proposal details");
+    expect(screen.getByRole("status")).toHaveAttribute("aria-busy", "true");
+    resolveInitial?.({ proposals: [proposal] });
+    expect(await screen.findByText("Private proposal content for reload recovery.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Shortlist" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Proposal lookup failed.");
+    expect(screen.getByText("Proposal details could not be loaded. They remain hidden until the request succeeds.")).toHaveAttribute("role", "status");
+    expect(screen.queryByText("Private proposal content for reload recovery.")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Retry proposals" }));
+    expect(await screen.findByText("Private proposal content for reload recovery.")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("announces the empty proposals state", async () => {
+    renderMarketplace({ proposals: [] });
+    expect(await screen.findByText(/No proposals yet\./)).toHaveAttribute("role", "status");
+    expect(screen.getByText(/Applicants' submissions will appear here/)).toBeInTheDocument();
   });
 });

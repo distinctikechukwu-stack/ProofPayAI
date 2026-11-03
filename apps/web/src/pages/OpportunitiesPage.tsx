@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { ArrowLeft, ArrowUpRight, Bookmark, BriefcaseBusiness, Check, CircleAlert, Flag, Plus, Search, Send, X } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ActiveJobFilterChips, type ActiveJobFilterId } from "../components/ActiveJobFilterChips";
+import { FreelancerProposalReview } from "../components/FreelancerProposalReview";
 import { PageHeading, StatusPill } from "../components/WorkspacePrimitives";
 import { SavedJobSearchPresets, type JobSearchFilters } from "../components/SavedJobSearchPresets";
 import { useAuth } from "../contexts/AuthContext";
@@ -341,8 +342,9 @@ export function OpportunitiesPage() {
         onFavorite={() => void toggleFavorite(selectedJob)} onChangeStatus={(action) => void changeJobStatus(selectedJob, action)}
         onProposal={async (body, submit) => {
           const result = await apiRequest<{ proposalId: string }>(`/api/jobs/${selectedJob.id}/proposals`, { method: "POST", body });
-          if (submit && !(await updateProposal(result.proposalId, "submit"))) throw new Error("Your draft was saved, but the proposal was not submitted. Review the message and retry.");
-          else { setNotice("Proposal draft saved to your account."); refresh(); }
+          if (submit) {
+            if (!(await updateProposal(result.proposalId, "submit"))) throw new Error("Your draft was saved, but the proposal was not submitted. Review the message and retry.");
+          } else { setNotice("Proposal draft saved to your account."); refresh(); }
         }}
         onTransition={(proposalId, action) => void updateProposal(proposalId, action)}
         onOffer={submitOffer} proposalLoadFailed={proposalLoadFailed} onRetry={refresh}
@@ -442,6 +444,9 @@ function JobDetail({
   const [quote, setQuote] = useState(ownProposal ? minorToText(ownProposal.quoteMinor, job.currency) : "");
   const [timeline, setTimeline] = useState(ownProposal ? String(ownProposal.timelineDays) : "14");
   const [selectedPortfolio, setSelectedPortfolio] = useState<string[]>(ownProposal?.portfolioItemIds ?? []);
+  const [reviewingProposal, setReviewingProposal] = useState(false);
+  const restoreEditingFocus = useRef(false);
+  const coverLetterRef = useRef<HTMLTextAreaElement>(null);
   const [message, setMessage] = useState("");
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState("suspicious");
@@ -456,7 +461,14 @@ function JobDetail({
     setTimeline(String(ownProposal.timelineDays));
     setSelectedPortfolio(ownProposal.portfolioItemIds);
   }, [job.currency, ownProposal?.id, ownProposal?.coverLetter, ownProposal?.quoteMinor, ownProposal?.timelineDays, ownProposal?.portfolioItemIds]);
+  useEffect(() => {
+    if (!reviewingProposal && restoreEditingFocus.current) {
+      coverLetterRef.current?.focus();
+      restoreEditingFocus.current = false;
+    }
+  }, [reviewingProposal]);
   const changePortfolio = (id: string, checked: boolean) => setSelectedPortfolio((current) => checked ? [...new Set([...current, id])] : current.filter((item) => item !== id));
+  const proposalQuoteMinor = amountMinor(quote, job.currency);
   const saveProposal = async (submit: boolean) => {
     setMessage("");
     try {
@@ -473,11 +485,24 @@ function JobDetail({
       {job.requirements.length > 0 && <div className="marketplace-detail-section"><h2>Requirements</h2><ul>{job.requirements.map((requirement) => <li key={requirement}>{requirement}</li>)}</ul></div>}
       {job.skills.length > 0 && <div className="marketplace-detail-section"><h2>Skills</h2><div className="marketplace-job-tags">{job.skills.map((skill) => <span key={skill}>{skill}</span>)}</div></div>}
       {showProposal && <section className="marketplace-proposal-box"><div className="marketplace-section-heading"><div><span className="eyebrow">YOUR APPLICATION</span><h2>{canEditProposal ? ownProposal ? "Update your proposal" : "Send a thoughtful proposal" : "Application record"}</h2></div>{ownProposal && <StatusPill status={ownProposal.status} />}</div>
-        {canEditProposal ? <form className="marketplace-form" onSubmit={(event) => { event.preventDefault(); void saveProposal(false); }}>
-          <label>Cover letter<textarea required minLength={30} maxLength={5000} rows={5} value={coverLetter} onChange={(event) => setCoverLetter(event.target.value)} placeholder="Explain how you would approach the requirements and what you would deliver." /></label>
+        {canEditProposal ? reviewingProposal ? <FreelancerProposalReview
+          coverLetter={coverLetter}
+          quoteText={quote}
+          quoteMinor={proposalQuoteMinor}
+          quotePreview={proposalQuoteMinor === null ? "" : displayMinor(String(proposalQuoteMinor), job.currency)}
+          currency={job.currency}
+          timelineText={timeline}
+          timelineDays={Number(timeline)}
+          portfolioItemIds={selectedPortfolio}
+          portfolio={portfolio}
+          onEdit={() => { restoreEditingFocus.current = true; setReviewingProposal(false); }}
+          onRemoveUnavailableReference={(id) => setSelectedPortfolio((current) => current.filter((item) => item !== id))}
+          onConfirm={(input) => onProposal(input, true)}
+        /> : <form className="marketplace-form" onSubmit={(event) => { event.preventDefault(); void saveProposal(false); }}>
+          <label>Cover letter<textarea ref={coverLetterRef} required minLength={30} maxLength={5000} rows={5} value={coverLetter} onChange={(event) => setCoverLetter(event.target.value)} placeholder="Explain how you would approach the requirements and what you would deliver." /></label>
           <div className="marketplace-form-grid"><label>Your quote ({job.currency})<input required inputMode="decimal" value={quote} onChange={(event) => setQuote(event.target.value)} /></label><label>Expected timeline (days)<input required type="number" min="1" max="3650" value={timeline} onChange={(event) => setTimeline(event.target.value)} /></label></div>
           {portfolio.length > 0 && <fieldset className="marketplace-reference-list"><legend>Portfolio references <span className="field-hint">Choose only work you may share</span></legend>{portfolio.map((item) => <label key={item.id}><input type="checkbox" checked={selectedPortfolio.includes(item.id)} onChange={(event) => changePortfolio(item.id, event.target.checked)} /> {item.title}</label>)}</fieldset>}
-          {ownProposal?.status === "draft" ? <div className="marketplace-form-actions"><button className="button-secondary" type="submit">Save draft</button><button className="button-primary" type="button" onClick={() => void saveProposal(true)}><Send size={14} /> Submit proposal</button></div> : <div className="marketplace-form-actions"><button className="button-secondary" type="submit">Save proposal draft</button><button className="button-primary" type="button" onClick={() => void saveProposal(true)}><Send size={14} /> Save & submit</button></div>}
+          {ownProposal?.status === "draft" ? <div className="marketplace-form-actions"><button className="button-secondary" type="submit">Save draft</button><button className="button-primary" type="button" onClick={() => { setMessage(""); setReviewingProposal(true); }}>Review proposal <Send size={14} /></button></div> : <div className="marketplace-form-actions"><button className="button-secondary" type="submit">Save proposal draft</button><button className="button-primary" type="button" onClick={() => { setMessage(""); setReviewingProposal(true); }}>Review proposal <Send size={14} /></button></div>}
           {message && <p role="status" className="marketplace-inline-note">{message}</p>}
         </form> : <div className="marketplace-submitted-proposal"><p>{ownProposal?.coverLetter ?? "Your draft is saved, but this job is no longer open for new proposals."}</p>{ownProposal && <div className="marketplace-detail-meta"><strong>{displayMinor(ownProposal.quoteMinor, ownProposal.currency)}</strong><span>{ownProposal.timelineDays} day estimate</span><span>{ownProposal.portfolioItemIds.length} portfolio reference(s)</span></div>}{ownProposal && ["submitted", "shortlisted", "interview_invited"].includes(ownProposal.status) && <button className="marketplace-text-action" type="button" onClick={() => onTransition(ownProposal.id, "withdraw")}>Withdraw proposal</button>}{ownProposal?.status === "withdrawn" && <p className="marketplace-inline-note">This application was withdrawn. The one-application-per-job rule prevents a duplicate application.</p>}</div>}
       </section>}

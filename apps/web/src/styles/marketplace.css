@@ -418,3 +418,32 @@
   .marketplace-preset-rename { align-items:stretch; flex-direction:column; }
   .marketplace-preset-rename label { width:100%; }
 }
+/* Freelancer proposal review before the existing submit transition */
+.marketplace-proposal-review { display:grid; gap:14px; padding:clamp(15px,2.5vw,22px); border:1px solid #dfe8f2; border-radius:10px; background:linear-gradient(145deg,#fbfdff,#f7f9fc); }
+.marketplace-proposal-review-heading h3 { margin:5px 0; color:#30445e; font-size:clamp(16px,2.5vw,20px); }
+.marketplace-proposal-review-heading p { margin:0; color:#718198; font-size:11px; line-height:1.6; }
+.marketplace-proposal-review-heading h3:focus { outline:3px solid #9dc4f5; outline-offset:4px; border-radius:2px; }
+.marketplace-proposal-review-errors,.marketplace-proposal-review-error { padding:12px 14px; border:1px solid #efd7d5; border-radius:8px; color:#824a45; background:#fff8f7; }
+.marketplace-proposal-review-errors h4 { margin:0 0 6px; font-size:11px; }
+.marketplace-proposal-review-errors ul { display:grid; gap:4px; margin:0; padding-left:18px; font-size:10px; line-height:1.5; }
+.marketplace-proposal-review-details { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:0; }
+.marketplace-proposal-review-details>div { min-width:0; padding:12px; border:1px solid #e8edf3; border-radius:8px; background:#fff; }
+.marketplace-proposal-review-details dt { margin-bottom:6px; color:#728198; font-size:10px; font-weight:700; }
+.marketplace-proposal-review-details dd { margin:0; color:#354a63; font-size:12px; line-height:1.65; overflow-wrap:anywhere; }
+.marketplace-proposal-review-cover-letter,.marketplace-proposal-review-portfolio { grid-column:1/-1; }
+.marketplace-proposal-review-cover-letter dd { white-space:pre-wrap; }
+.marketplace-proposal-review-portfolio ul { display:grid; gap:7px; margin:0; padding:0; list-style:none; }
+.marketplace-proposal-review-portfolio li { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.marketplace-proposal-review-portfolio li .marketplace-text-action { flex:0 0 auto; min-height:40px; }
+.marketplace-proposal-review-status { margin:0; color:#387353; font-size:11px; line-height:1.5; }
+.marketplace-proposal-review-error { margin:0; font-size:11px; line-height:1.5; }
+.marketplace-proposal-review-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+.marketplace-proposal-review-actions button { min-height:44px; padding:9px 13px; }
+.marketplace-proposal-review-actions button:focus-visible,.marketplace-proposal-review-portfolio button:focus-visible { outline:3px solid #245ca7; outline-offset:3px; }
+.marketplace-proposal-review-actions button:disabled { cursor:not-allowed; opacity:.6; }
+@media (max-width:560px) {
+  .marketplace-proposal-review-details { grid-template-columns:minmax(0,1fr); }
+  .marketplace-proposal-review-details>div { grid-column:1; }
+  .marketplace-proposal-review-actions { align-items:stretch; flex-direction:column; }
+  .marketplace-proposal-review-actions button { width:100%; }
+}

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -27,6 +27,7 @@ vi.mock("../lib/api", () => ({ apiRequest: mocks.apiRequest, publicApiRequest: v
 
 const jobId = "00000000-0000-4000-8000-000000000001";
 const otherJobId = "00000000-0000-4000-8000-000000000002";
+const portfolioItemId = "10000000-0000-4000-8000-000000000001";
 
 const makeProposal = (overrides: Partial<Proposal> = {}): Proposal => ({
   id: "proposal-1",
@@ -51,14 +52,22 @@ function renderMarketplace({
     makeProposal({ id: "proposal-3", quoteMinor: "90000", timelineDays: 20, status: "interview_invited", createdAt: "2026-11-01T08:00:00.000Z", coverLetter: "I will document the work and provide review checkpoints." }),
   ],
   proposalLoader = async () => ({ proposals }),
+  portfolio = [],
+  apiOverride,
 }: {
   roles?: string[];
   isOwner?: boolean;
   proposals?: Proposal[];
   proposalLoader?: () => Promise<{ proposals: Proposal[] }>;
+  portfolio?: { id: string; title: string }[];
+  apiOverride?: (path: string, options?: { method?: string; body?: unknown }) => unknown | undefined | Promise<unknown | undefined>;
 } = {}) {
-  mocks.apiRequest.mockImplementation(async (path: string) => {
-    if (path === "/api/profile") return { roles, portfolio: [] };
+  mocks.apiRequest.mockImplementation(async (path: string, options?: { method?: string; body?: unknown }) => {
+    if (apiOverride) {
+      const overridden = await apiOverride(path, options);
+      if (overridden !== undefined) return overridden;
+    }
+    if (path === "/api/profile") return { roles, portfolio };
     if (path === "/api/offers") return { offers: [] };
     if (path === `/api/jobs/${jobId}`) return { job: {
       id: jobId, isOwner, title: "Build a product site", summary: "A responsive product website for a new service.",
@@ -67,6 +76,7 @@ function renderMarketplace({
       hourlyRateMinMinor: null, hourlyRateMaxMinor: null, currency: "USD", estimatedDays: 30,
       status: "published", createdAt: "2026-10-30T10:00:00.000Z",
     } };
+    if (path === `/api/jobs/${jobId}/proposals` && options?.method === "POST") return { proposalId: "proposal-created" };
     if (path === `/api/jobs/${jobId}/proposals`) return proposalLoader();
     if (typeof path === "string" && path.startsWith("/api/proposals/") && path.endsWith("/transition")) return {};
     if (typeof path !== "string") return {};
@@ -270,6 +280,137 @@ describe("client proposal comparison", () => {
     renderMarketplace({ proposals: [] });
     expect(await screen.findByText(/No proposals yet\./)).toHaveAttribute("role", "status");
     expect(screen.getByText(/Applicants' submissions will appear here/)).toBeInTheDocument();
+  });
+});
+
+describe("freelancer proposal review before submission", () => {
+  beforeEach(() => { vi.restoreAllMocks(); installLocalStorage(); mocks.apiRequest.mockReset(); mocks.user = { id: "freelancer-review-account" }; });
+
+  it("previews proposal details and returns to editing without losing entered values", async () => {
+    const user = userEvent.setup();
+    const coverLetter = "I will deliver a responsive first release and share progress at each review milestone.";
+    renderMarketplace({ roles: ["freelancer"], isOwner: false, proposals: [], portfolio: [{ id: portfolioItemId, title: "Scheduling dashboard case study" }] });
+    await screen.findByRole("heading", { name: "Send a thoughtful proposal" });
+
+    await user.type(screen.getByRole("textbox", { name: "Cover letter" }), coverLetter);
+    await user.type(screen.getByRole("textbox", { name: "Your quote (USD)" }), "125.50");
+    const timeline = screen.getByRole("spinbutton", { name: "Expected timeline (days)" });
+    await user.clear(timeline);
+    await user.type(timeline, "21");
+    await user.click(screen.getByRole("checkbox", { name: "Scheduling dashboard case study" }));
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+
+    const heading = await screen.findByRole("heading", { name: "Review your proposal" });
+    expect(heading).toHaveFocus();
+    expect(screen.getByText(coverLetter)).toBeInTheDocument();
+    expect(screen.getByText("$125.50 (USD)")).toBeInTheDocument();
+    expect(screen.getByText("21 days")).toBeInTheDocument();
+    expect(screen.getByText("Scheduling dashboard case study")).toBeInTheDocument();
+    expect(marketplaceStyles).toContain(".marketplace-proposal-review-details { display:grid; grid-template-columns:repeat(2,minmax(0,1fr));");
+    expect(marketplaceStyles).toContain(".marketplace-proposal-review-actions { align-items:stretch; flex-direction:column; }");
+    expect(mocks.apiRequest.mock.calls.some(([path, options]) => path === `/api/jobs/${jobId}/proposals` && options?.method === "POST")).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Return to editing" }));
+    expect(screen.getByRole("textbox", { name: "Cover letter" })).toHaveValue(coverLetter);
+    expect(screen.getByRole("textbox", { name: "Cover letter" })).toHaveFocus();
+    expect(screen.getByRole("textbox", { name: "Your quote (USD)" })).toHaveValue("125.50");
+    expect(screen.getByRole("spinbutton", { name: "Expected timeline (days)" })).toHaveValue(21);
+    expect(screen.getByRole("checkbox", { name: "Scheduling dashboard case study" })).toBeChecked();
+  });
+
+  it("clearly lists missing or invalid required fields and blocks confirmation", async () => {
+    const user = userEvent.setup();
+    renderMarketplace({ roles: ["freelancer"], isOwner: false, proposals: [] });
+    await screen.findByRole("heading", { name: "Send a thoughtful proposal" });
+    await user.type(screen.getByRole("textbox", { name: "Cover letter" }), "Too short");
+    await user.type(screen.getByRole("textbox", { name: "Your quote (USD)" }), "0.00");
+    const timeline = screen.getByRole("spinbutton", { name: "Expected timeline (days)" });
+    await user.clear(timeline);
+    await user.type(timeline, "0");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+
+    const errors = await screen.findByRole("alert");
+    expect(errors).toHaveTextContent("Cover letter must contain 30 to 5,000 characters.");
+    expect(errors).toHaveTextContent("Enter a positive exact quote using the job currency.");
+    expect(errors).toHaveTextContent("Delivery timeline must be a whole number from 1 to 3,650 days.");
+    expect(screen.getByText("Invalid amount: 0.00 USD")).toBeInTheDocument();
+    expect(screen.getByText("Invalid timeline: 0")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm and submit proposal" })).toBeDisabled();
+    expect(mocks.apiRequest.mock.calls.some(([path, options]) => path === `/api/jobs/${jobId}/proposals` && options?.method === "POST")).toBe(false);
+  });
+
+  it("requires explicit confirmation and ignores duplicate clicks while a request is pending", async () => {
+    const user = userEvent.setup();
+    let resolveCreate: ((result: { proposalId: string }) => void) | undefined;
+    const apiOverride = (path: string, options?: { method?: string }) => {
+      if (path === `/api/jobs/${jobId}/proposals` && options?.method === "POST") {
+        return new Promise<{ proposalId: string }>((resolve) => { resolveCreate = resolve; });
+      }
+      return undefined;
+    };
+    renderMarketplace({ roles: ["freelancer"], isOwner: false, proposals: [], apiOverride });
+    await screen.findByRole("heading", { name: "Send a thoughtful proposal" });
+    await user.type(screen.getByRole("textbox", { name: "Cover letter" }), "I will deliver the agreed scope with clear milestones and a documented handoff.");
+    await user.type(screen.getByRole("textbox", { name: "Your quote (USD)" }), "125.50");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    expect(mocks.apiRequest.mock.calls.some(([path, options]) => path === `/api/jobs/${jobId}/proposals` && options?.method === "POST")).toBe(false);
+
+    const confirm = screen.getByRole("button", { name: "Confirm and submit proposal" });
+    fireEvent.click(confirm);
+    fireEvent.click(confirm);
+    expect(screen.getByRole("status")).toHaveTextContent("Submitting proposal");
+    const createCalls = mocks.apiRequest.mock.calls.filter(([path, options]) => path === `/api/jobs/${jobId}/proposals` && options?.method === "POST");
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0]?.[1]?.body).toMatchObject({ coverLetter: "I will deliver the agreed scope with clear milestones and a documented handoff.", quoteMinor: 12550, timelineDays: 14, portfolioItemIds: [] });
+
+    resolveCreate?.({ proposalId: "proposal-created" });
+    expect(await screen.findByText("Proposal submitted.")).toBeInTheDocument();
+    expect(mocks.apiRequest).toHaveBeenCalledWith("/api/proposals/proposal-created/transition", { method: "POST", body: { action: "submit" } });
+  });
+
+  it("supports keyboard review and confirmation", async () => {
+    const user = userEvent.setup();
+    renderMarketplace({ roles: ["freelancer"], isOwner: false, proposals: [] });
+    await screen.findByRole("heading", { name: "Send a thoughtful proposal" });
+    await user.type(screen.getByRole("textbox", { name: "Cover letter" }), "I will deliver the agreed scope with clear milestones and a documented handoff.");
+    await user.type(screen.getByRole("textbox", { name: "Your quote (USD)" }), "125.50");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+
+    await screen.findByRole("heading", { name: "Review your proposal" });
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Return to editing" })).toHaveFocus();
+    await user.tab();
+    const confirm = screen.getByRole("button", { name: "Confirm and submit proposal" });
+    expect(confirm).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(await screen.findByText("Proposal submitted.")).toBeInTheDocument();
+    expect(mocks.apiRequest.mock.calls.filter(([path, options]) => path === `/api/jobs/${jobId}/proposals` && options?.method === "POST")).toHaveLength(1);
+  });
+
+  it("shows API failures and allows a clear retry", async () => {
+    const user = userEvent.setup();
+    let createAttempts = 0;
+    const apiOverride = (path: string, options?: { method?: string }) => {
+      if (path === `/api/jobs/${jobId}/proposals` && options?.method === "POST") {
+        createAttempts += 1;
+        if (createAttempts === 1) throw new Error("Temporary network failure.");
+        return { proposalId: "proposal-retried" };
+      }
+      return undefined;
+    };
+    renderMarketplace({ roles: ["freelancer"], isOwner: false, proposals: [], apiOverride });
+    await screen.findByRole("heading", { name: "Send a thoughtful proposal" });
+    await user.type(screen.getByRole("textbox", { name: "Cover letter" }), "I will deliver the agreed scope with clear milestones and a documented handoff.");
+    await user.type(screen.getByRole("textbox", { name: "Your quote (USD)" }), "125.50");
+    await user.click(screen.getByRole("button", { name: "Review proposal" }));
+    await user.click(screen.getByRole("button", { name: "Confirm and submit proposal" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Temporary network failure.");
+    expect(screen.getByRole("button", { name: "Confirm and submit proposal" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Confirm and submit proposal" }));
+    expect(await screen.findByText("Proposal submitted.")).toBeInTheDocument();
+    expect(createAttempts).toBe(2);
+    expect(mocks.apiRequest).toHaveBeenCalledWith("/api/proposals/proposal-retried/transition", { method: "POST", body: { action: "submit" } });
   });
 });
 

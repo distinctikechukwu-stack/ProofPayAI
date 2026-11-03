@@ -9,6 +9,7 @@ import { PageHeading, StatusPill } from "../components/WorkspacePrimitives";
 import { SavedJobSearchPresets, type JobSearchFilters } from "../components/SavedJobSearchPresets";
 import { useAuth } from "../contexts/AuthContext";
 import { apiRequest } from "../lib/api";
+import { marketplaceJobInputSchema } from "@proofpay/shared";
 
 type Job = {
   id: string; isOwner?: boolean; title: string; summary: string; description: string; requirements: string[]; skills: string[];
@@ -32,6 +33,8 @@ type JobDraft = {
   hourlyMin: string; hourlyMax: string; currency: string; estimatedDays: string;
 };
 
+class PublishOutcomeUnclearError extends Error {}
+
 const emptyJobDraft = (): JobDraft => ({
   title: "", summary: "", description: "", requirements: "", skills: "", category: "",
   experienceLevel: "intermediate", projectType: "fixed", fixedBudget: "", hourlyMin: "", hourlyMax: "",
@@ -42,6 +45,30 @@ const currencyDigits = (currency: string) => {
   try { return new Intl.NumberFormat("en-US", { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2; }
   catch { return 2; }
 };
+function validateJobDraft(draft: JobDraft, idempotencyKey: string, id: string | null) {
+  const fixed = draft.projectType === "fixed" ? amountMinor(draft.fixedBudget, draft.currency) : null;
+  const hourlyMin = draft.projectType === "hourly" ? amountMinor(draft.hourlyMin, draft.currency) : null;
+  const hourlyMax = draft.projectType === "hourly" ? amountMinor(draft.hourlyMax, draft.currency) : null;
+  const parsed = marketplaceJobInputSchema.safeParse({
+    id, idempotencyKey, title: draft.title, summary: draft.summary, description: draft.description,
+    requirements: splitLines(draft.requirements), skills: splitLines(draft.skills), category: draft.category,
+    experienceLevel: draft.experienceLevel, projectType: draft.projectType, fixedBudgetMinor: fixed,
+    hourlyRateMinMinor: hourlyMin, hourlyRateMaxMinor: hourlyMax, currency: draft.currency,
+    estimatedDays: draft.estimatedDays.trim() ? Number(draft.estimatedDays) : null,
+  });
+  if (parsed.success) return { payload: parsed.data, issues: [] as string[] };
+  const labels: Record<string, string> = {
+    id: "Listing", idempotencyKey: "Submission", title: "Job title", summary: "Short summary", description: "Description",
+    requirements: "Requirements", skills: "Skills", category: "Category", experienceLevel: "Experience level",
+    projectType: "Project type", fixedBudgetMinor: "Fixed budget", hourlyRateMinMinor: "Minimum hourly rate",
+    hourlyRateMaxMinor: "Maximum hourly rate", currency: "Currency", estimatedDays: "Estimated duration",
+  };
+  const issues = [...new Set(parsed.error.issues.map((issue) => {
+    const key = String(issue.path[0] ?? "");
+    return `${labels[key] ?? (draft.projectType === "fixed" ? "Fixed budget" : "Hourly rates")}: ${issue.message}`;
+  }))];
+  return { payload: null, issues };
+}
 function amountMinor(value: string, currency: string): number | null {
   const digits = currencyDigits(currency);
   const match = digits === 0 ? /^(\d+)$/.exec(value.trim()) : new RegExp(`^(\\d+)(?:\\.(\\d{1,${digits}}))?$`).exec(value.trim());
@@ -176,6 +203,7 @@ export function OpportunitiesPage() {
   const [savedOnly, setSavedOnly] = useState(false);
   const [showJobEditor, setShowJobEditor] = useState(false);
   const [editingJob, setEditingJob] = useState<Job | null>(null);
+  const [jobEditorStartAtPreview, setJobEditorStartAtPreview] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const isCurrentUserProfile = Boolean(user && rolesUserId === user.id);
   const isFreelancer = isCurrentUserProfile && roles.includes("freelancer");
@@ -284,23 +312,50 @@ export function OpportunitiesPage() {
       refresh();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "The job status could not be changed."); }
   };
-  const saveJob = async (draft: JobDraft, idempotencyKey: string) => {
-    const fixed = draft.projectType === "fixed" ? amountMinor(draft.fixedBudget, draft.currency) : null;
-    const hourlyMin = draft.projectType === "hourly" ? amountMinor(draft.hourlyMin, draft.currency) : null;
-    const hourlyMax = draft.projectType === "hourly" ? amountMinor(draft.hourlyMax, draft.currency) : null;
-    if ((draft.projectType === "fixed" && fixed === null) || (draft.projectType === "hourly" && (hourlyMin === null || hourlyMax === null || hourlyMin > hourlyMax))) {
-      throw new Error("Enter a valid exact budget or hourly rate range.");
-    }
-    const result = await apiRequest<{ jobId: string }>("/api/jobs", { method: "POST", body: {
-      id: editingJob?.id ?? null, idempotencyKey, title: draft.title, summary: draft.summary, description: draft.description,
-      requirements: splitLines(draft.requirements), skills: splitLines(draft.skills), category: draft.category,
-      experienceLevel: draft.experienceLevel, projectType: draft.projectType, fixedBudgetMinor: fixed,
-      hourlyRateMinMinor: hourlyMin, hourlyRateMaxMinor: hourlyMax, currency: draft.currency,
-      estimatedDays: draft.estimatedDays.trim() ? Number(draft.estimatedDays) : null,
-    } });
+  const persistJobDraft = async (draft: JobDraft, idempotencyKey: string, id: string | null) => {
+    const validation = validateJobDraft(draft, idempotencyKey, id);
+    if (!validation.payload) throw new Error(validation.issues.join(" "));
+    return apiRequest<{ jobId: string }>("/api/jobs", { method: "POST", body: validation.payload });
+  };
+  const saveJob = async (draft: JobDraft, idempotencyKey: string, id: string | null = editingJob?.id ?? null) => {
+    const result = await persistJobDraft(draft, idempotencyKey, id);
     setNotice("Job draft saved. Publish it when the listing is ready for applicants.");
     setShowJobEditor(false); setEditingJob(null); refresh();
     return result;
+  };
+  const completeJobPublish = () => {
+    setNotice("Job published. It is now available to freelancers.");
+    setShowJobEditor(false); setEditingJob(null); setJobEditorStartAtPreview(false); refresh();
+  };
+  const getJobStatus = async (id: string): Promise<Job["status"]> => {
+    const response = await apiRequest<{ job: Job }>(`/api/jobs/${encodeURIComponent(id)}`);
+    return response.job.status;
+  };
+  const publishJob = async (id: string) => {
+    try {
+      await apiRequest(`/api/jobs/${id}/status`, { method: "POST", body: { action: "publish" } });
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : "The publishing request failed.";
+      let status: Job["status"];
+      try { status = await getJobStatus(id); }
+      catch {
+        throw new PublishOutcomeUnclearError(`The publish request did not return a result, and the listing status could not be verified. Do not retry until you verify its status. ${detail}`);
+      }
+      if (status === "published") {
+        completeJobPublish();
+        return;
+      }
+      if (status !== "draft") {
+        throw new PublishOutcomeUnclearError(`The listing is currently ${status}. Publishing is blocked until its status can be verified as a draft. ${detail}`);
+      }
+      throw new Error(`The listing status was verified as draft, so publishing can be safely retried. Your details are still here. ${detail}`);
+    }
+    completeJobPublish();
+  };
+  const verifyJobPublishStatus = async (id: string) => {
+    const status = await getJobStatus(id);
+    if (status === "published") completeJobPublish();
+    return status;
   };
 
   const updateProposal = async (proposalId: string, action: "submit" | "withdraw" | "shortlist" | "reject" | "invite_interview"): Promise<boolean> => {
@@ -343,10 +398,13 @@ export function OpportunitiesPage() {
   </>;
 
   return <>
-    <PageHeading eyebrow="FREELANCE MARKETPLACE" title={jobId ? "Opportunity details" : "Find your next opportunity"} description="Browse persisted listings, compare terms, and keep proposals and offer decisions attached to the job." action={!jobId && isClient ? <button className="button-primary" type="button" onClick={() => { setEditingJob(null); setShowJobEditor((open) => !open); }}><Plus size={15} /> Post a job</button> : undefined} />
+    <PageHeading eyebrow="FREELANCE MARKETPLACE" title={jobId ? "Opportunity details" : "Find your next opportunity"} description="Browse persisted listings, compare terms, and keep proposals and offer decisions attached to the job." action={!jobId && isClient ? <button className="button-primary" type="button" onClick={() => { setEditingJob(null); setJobEditorStartAtPreview(false); setShowJobEditor((open) => !open); }}><Plus size={15} /> Post a job</button> : undefined} />
     {error && <p className="marketplace-alert" role="alert"><CircleAlert size={15} />{error}</p>}
     {notice && <p className="marketplace-notice" role="status"><Check size={15} />{notice}</p>}
-    {showJobEditor && <JobEditor initial={editingJob} onCancel={() => { setShowJobEditor(false); setEditingJob(null); }} onSave={saveJob} />}
+    {showJobEditor && <JobEditor key={`${editingJob?.id ?? "new-job"}:${jobEditorStartAtPreview ? "preview" : "edit"}`} initial={editingJob} startAtPreview={jobEditorStartAtPreview}
+      onCancel={() => { setShowJobEditor(false); setEditingJob(null); setJobEditorStartAtPreview(false); }}
+      onSaveDraft={(draft, key) => saveJob(draft, key, editingJob?.id ?? null)}
+      onPersistDraft={persistJobDraft} onPublish={publishJob} onVerifyPublishStatus={verifyJobPublishStatus} />}
     {jobId ? <>
       <Link className="marketplace-back" to="/app/opportunities"><ArrowLeft size={14} /> Back to opportunities</Link>
       {loading ? <div className="marketplace-empty" role="status" aria-busy="true">Loading job and proposal details…</div> : selectedJob ? <JobDetail
@@ -365,7 +423,7 @@ export function OpportunitiesPage() {
           await apiRequest(`/api/jobs/${selectedJob.id}/reports`, { method: "POST", body: { reason, details } });
           setNotice("Report sent for review. It is private to you and marketplace administrators.");
         }}
-        onEdit={() => { setEditingJob(selectedJob); setShowJobEditor(true); }}
+        onEdit={(mode = "edit") => { setEditingJob(selectedJob); setJobEditorStartAtPreview(mode === "preview"); setShowJobEditor(true); }}
       /> : error ? <div className="marketplace-empty"><h2>Job details unavailable</h2><p>This listing could not be loaded. It may be private, closed, or unavailable to your account.</p><button className="button-secondary" type="button" onClick={refresh}>Retry loading job</button></div>
         : <div className="marketplace-empty"><h2>Job not found</h2><p>This listing may have been removed or is no longer available.</p><Link to="/app/opportunities">Browse open jobs</Link></div>}
     </> : <>
@@ -396,7 +454,16 @@ export function OpportunitiesPage() {
   </>;
 }
 
-function JobEditor({ initial, onCancel, onSave }: { initial: Job | null; onCancel: () => void; onSave: (draft: JobDraft, key: string) => Promise<unknown> }) {
+type JobEditorStage = "edit" | "preview" | "confirm";
+type PersistedJob = { jobId: string };
+
+function JobEditor({ initial, startAtPreview, onCancel, onSaveDraft, onPersistDraft, onPublish, onVerifyPublishStatus }: {
+  initial: Job | null; startAtPreview: boolean; onCancel: () => void;
+  onSaveDraft: (draft: JobDraft, key: string) => Promise<unknown>;
+  onPersistDraft: (draft: JobDraft, key: string, id: string | null) => Promise<PersistedJob>;
+  onPublish: (id: string) => Promise<void>;
+  onVerifyPublishStatus: (id: string) => Promise<Job["status"]>;
+}) {
   const [draft, setDraft] = useState<JobDraft>(() => initial ? {
     title: initial.title, summary: initial.summary, description: initial.description, requirements: initial.requirements.join("\n"),
     skills: initial.skills.join(", "), category: initial.category, experienceLevel: initial.experienceLevel, projectType: initial.projectType,
@@ -406,19 +473,96 @@ function JobEditor({ initial, onCancel, onSave }: { initial: Job | null; onCance
     currency: initial.currency, estimatedDays: initial.estimatedDays ? String(initial.estimatedDays) : "",
   } : emptyJobDraft());
   const [key] = useState(() => crypto.randomUUID());
+  const [stage, setStage] = useState<JobEditorStage>(() => startAtPreview ? "preview" : "edit");
   const [busy, setBusy] = useState(false);
+  const [publishOutcomeUnclear, setPublishOutcomeUnclear] = useState(false);
   const [message, setMessage] = useState("");
-  const change = (field: keyof JobDraft, value: string) => setDraft((current) => ({ ...current, [field]: value }));
-  const submit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); setBusy(true); setMessage("");
-    try { await onSave(draft, key); }
+  const [validationIssues, setValidationIssues] = useState<string[]>([]);
+  const [persistedJobId, setPersistedJobId] = useState<string | null>(initial?.id ?? null);
+  const publishLock = useRef(false);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const stageHeadingRef = useRef<HTMLHeadingElement>(null);
+  const restoreEditFocus = useRef(false);
+  const change = (field: keyof JobDraft, value: string) => {
+    setDraft((current) => ({ ...current, [field]: value }));
+    setMessage("");
+  };
+  useEffect(() => {
+    if (stage === "edit" && restoreEditFocus.current) {
+      titleInputRef.current?.focus();
+      restoreEditFocus.current = false;
+    } else if (stage !== "edit") stageHeadingRef.current?.focus();
+  }, [stage]);
+  const openPreview = () => {
+    const validation = validateJobDraft(draft, key, persistedJobId);
+    setValidationIssues(validation.issues);
+    setMessage("");
+    setStage("preview");
+  };
+  const returnToEdit = () => { restoreEditFocus.current = true; setStage("edit"); };
+  const continueToConfirmation = () => {
+    const validation = validateJobDraft(draft, key, persistedJobId);
+    setValidationIssues(validation.issues);
+    if (validation.issues.length) return;
+    setMessage("");
+    setStage("confirm");
+  };
+  const saveDraft = async () => {
+    setBusy(true); setMessage("");
+    try { await onSaveDraft(draft, key); }
     catch (reason) { setMessage(reason instanceof Error ? reason.message : "The job draft could not be saved."); }
     finally { setBusy(false); }
   };
-  return <section className="surface-card marketplace-editor">
-    <div className="marketplace-editor-heading"><div><span className="eyebrow">CLIENT JOB POST</span><h2>{initial ? "Edit listing" : "Describe the work clearly"}</h2><p>Job listings are editable drafts until you publish them.</p></div><button className="marketplace-icon-action" type="button" aria-label="Close job form" onClick={onCancel}><X size={15} /></button></div>
-    <form className="marketplace-form" onSubmit={submit}>
-      <label>Job title<input required minLength={5} maxLength={160} value={draft.title} onChange={(event) => change("title", event.target.value)} placeholder="e.g. Build an appointment scheduling website" /></label>
+  const publish = async () => {
+    if (publishLock.current) return;
+    const validation = validateJobDraft(draft, key, persistedJobId);
+    setValidationIssues(validation.issues);
+    if (validation.issues.length) { setStage("preview"); return; }
+    publishLock.current = true;
+    setBusy(true); setMessage("");
+    try {
+      const saved = await onPersistDraft(draft, key, persistedJobId);
+      setPersistedJobId(saved.jobId);
+      await onPublish(saved.jobId);
+    } catch (reason) {
+      publishLock.current = false;
+      setPublishOutcomeUnclear(reason instanceof PublishOutcomeUnclearError);
+      setMessage(reason instanceof Error ? reason.message : "The listing could not be published. Your draft is still available to retry.");
+    } finally { setBusy(false); }
+  };
+  const verifyPublishStatus = async () => {
+    if (!persistedJobId || busy) return;
+    setBusy(true); setMessage("");
+    try {
+      const status = await onVerifyPublishStatus(persistedJobId);
+      if (status === "published") return;
+      if (status === "draft") {
+        setPublishOutcomeUnclear(false);
+        setMessage("Status verified: this listing is still a draft. You can safely retry publishing.");
+        return;
+      }
+      setMessage(`Status verified as ${status}. Publishing remains blocked until the listing is a draft.`);
+    } catch (reason) {
+      setMessage(`The listing status still could not be verified. Do not retry publishing yet. ${reason instanceof Error ? reason.message : "Please try status verification again."}`);
+    } finally { setBusy(false); }
+  };
+  const experienceText = draft.experienceLevel === "entry" ? "Entry level" : draft.experienceLevel === "expert" ? "Expert" : "Intermediate";
+  const requirements = splitLines(draft.requirements);
+  const skills = splitLines(draft.skills);
+  const currencyLabel = draft.currency.trim() || "Currency not provided";
+  const amountLabel = (value: string) => {
+    const amount = amountMinor(value, draft.currency);
+    return amount !== null && /^[A-Z]{3}$/.test(draft.currency)
+      ? displayMinor(String(amount), draft.currency)
+      : value.trim() || "Not provided";
+  };
+  const budgetText = draft.projectType === "fixed"
+    ? `${amountLabel(draft.fixedBudget)} ${currencyLabel} fixed price`
+    : `${amountLabel(draft.hourlyMin)}–${amountLabel(draft.hourlyMax)} ${currencyLabel} / hour`;
+  return <section className="surface-card marketplace-editor" aria-labelledby="job-editor-heading">
+    <div className="marketplace-editor-heading"><div><span className="eyebrow">CLIENT JOB POST</span><h2 id="job-editor-heading">{stage === "edit" ? initial ? "Edit listing" : "Describe the work clearly" : stage === "preview" ? "Preview your job listing" : "Confirm publishing"}</h2><p>{stage === "edit" ? "Review the listing before publishing. It remains a draft until you confirm." : stage === "preview" ? "This is how the listing details will appear to freelancers." : "Publishing makes this listing visible to freelancers who can apply."}</p></div><button className="marketplace-icon-action" type="button" aria-label="Close job form" disabled={busy || publishOutcomeUnclear} onClick={onCancel}><X size={15} /></button></div>
+    {stage === "edit" && <form className="marketplace-form" noValidate onSubmit={(event: FormEvent<HTMLFormElement>) => { event.preventDefault(); openPreview(); }}>
+      <label>Job title<input ref={titleInputRef} required minLength={5} maxLength={160} value={draft.title} onChange={(event) => change("title", event.target.value)} placeholder="e.g. Build an appointment scheduling website" /></label>
       <label>Short summary<input required minLength={10} maxLength={240} value={draft.summary} onChange={(event) => change("summary", event.target.value)} /></label>
       <label>Full description<textarea required minLength={30} maxLength={8000} rows={5} value={draft.description} onChange={(event) => change("description", event.target.value)} /></label>
       <div className="marketplace-form-grid"><label>Category<input required minLength={2} maxLength={80} value={draft.category} onChange={(event) => change("category", event.target.value)} placeholder="Development & technology" /></label><label>Experience<select value={draft.experienceLevel} onChange={(event) => change("experienceLevel", event.target.value)}><option value="entry">Entry level</option><option value="intermediate">Intermediate</option><option value="expert">Expert</option></select></label></div>
@@ -427,8 +571,32 @@ function JobEditor({ initial, onCancel, onSave }: { initial: Job | null; onCance
       {draft.projectType === "fixed" ? <label>Fixed budget ({draft.currency})<input required inputMode="decimal" placeholder="600.00" value={draft.fixedBudget} onChange={(event) => change("fixedBudget", event.target.value)} /></label> : <div className="marketplace-form-grid"><label>Minimum hourly rate ({draft.currency})<input required inputMode="decimal" value={draft.hourlyMin} onChange={(event) => change("hourlyMin", event.target.value)} /></label><label>Maximum hourly rate ({draft.currency})<input required inputMode="decimal" value={draft.hourlyMax} onChange={(event) => change("hourlyMax", event.target.value)} /></label></div>}
       <div className="marketplace-form-grid"><label>Currency<input required maxLength={3} pattern="[A-Z]{3}" value={draft.currency} onChange={(event) => change("currency", event.target.value.toUpperCase())} /></label><label>Estimated duration in days<input type="number" min="1" max="3650" value={draft.estimatedDays} onChange={(event) => change("estimatedDays", event.target.value)} placeholder="Optional" /></label></div>
       {message && <p className="marketplace-inline-error" role="alert">{message}</p>}
-      <div className="marketplace-form-actions"><button className="button-secondary" type="button" onClick={onCancel}>Cancel</button><button className="button-primary" disabled={busy}>{busy ? "Saving…" : initial ? "Save changes" : "Save job draft"} <Check size={14} /></button></div>
-    </form>
+      <div className="marketplace-form-actions"><button className="button-secondary" type="button" onClick={onCancel}>Cancel</button><button className="button-secondary" type="button" disabled={busy} onClick={() => void saveDraft()}>{busy ? "Working…" : initial ? "Save draft changes" : "Save job draft"}</button><button className="button-primary" type="submit" disabled={busy}>Preview listing <ArrowUpRight size={14} /></button></div>
+    </form>}
+    {stage === "preview" && <div className="marketplace-job-preview">
+      <h3 ref={stageHeadingRef} tabIndex={-1}>Freelancer listing preview</h3>
+      <p className="marketplace-preview-note">Preview only. Opening this screen has not created or published a job.</p>
+      <article className="marketplace-job-card marketplace-job-preview-card">
+        <div className="marketplace-job-top"><div><span className="marketplace-category">{draft.category.trim() || "Category not provided"} · {experienceText}</span><h2>{draft.title.trim() || "Job title not provided"}</h2><p>{draft.summary.trim() || "Short summary not provided"}</p></div><strong className="marketplace-budget">{budgetText}</strong></div>
+        <div className="marketplace-job-bottom"><span>{draft.projectType === "fixed" ? "Fixed price" : "Hourly"} · {draft.estimatedDays.trim() ? `${draft.estimatedDays} day estimate` : "Timeline not specified"}</span><span>Draft preview</span></div>
+        <div className="marketplace-detail-section"><h4>About this project</h4><p>{draft.description.trim() || "Description not provided"}</p></div>
+        <div className="marketplace-detail-section"><h4>Requirements</h4>{requirements.length ? <ul>{requirements.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul> : <p>Requirements not provided.</p>}</div>
+        <div className="marketplace-detail-section"><h4>Skills</h4>{skills.length ? <div className="marketplace-job-tags">{skills.map((item, index) => <span key={`${index}-${item}`}>{item}</span>)}</div> : <p>No skills provided.</p>}</div>
+      </article>
+      {validationIssues.length > 0 && <div className="marketplace-job-validation" role="alert" aria-labelledby="job-validation-heading"><h4 id="job-validation-heading">Complete these fields before publishing</h4><ul>{validationIssues.map((issue, index) => <li key={`${index}-${issue}`}>{issue}</li>)}</ul></div>}
+      {message && <p className="marketplace-inline-error" role="alert">{message}</p>}
+      <div className="marketplace-form-actions"><button className="button-secondary" type="button" disabled={publishOutcomeUnclear} onClick={returnToEdit}>Back to edit</button><button className="button-primary" type="button" disabled={busy || validationIssues.length > 0} onClick={continueToConfirmation}>Continue to publish confirmation <ArrowUpRight size={14} /></button></div>
+    </div>}
+    {stage === "confirm" && <div className="marketplace-job-confirmation">
+      <h3 ref={stageHeadingRef} tabIndex={-1}>Ready to publish?</h3>
+      <p>Publish <strong>{draft.title.trim()}</strong> as a {draft.projectType === "fixed" ? "fixed-price" : "hourly"} job. Freelancers will be able to view the listing and submit proposals.</p>
+      <dl><div><dt>Category</dt><dd>{draft.category.trim()}</dd></div><div><dt>Budget</dt><dd>{budgetText}</dd></div><div><dt>Experience</dt><dd>{experienceText}</dd></div><div><dt>Estimated duration</dt><dd>{draft.estimatedDays.trim() ? `${draft.estimatedDays} days` : "Not specified"}</dd></div></dl>
+      <p className="marketplace-preview-note">You are confirming that this listing is ready for applicants.</p>
+      {message && <p className="marketplace-inline-error" role="alert">{message}</p>}
+      {busy && <p className="marketplace-inline-note" role="status" aria-live="polite">Saving the draft and publishing the listing…</p>}
+      {publishOutcomeUnclear && <button className="button-secondary" type="button" disabled={busy} onClick={() => void verifyPublishStatus()}>{busy ? "Verifying status…" : "Verify publish status"}</button>}
+      <div className="marketplace-form-actions"><button className="button-secondary" type="button" disabled={busy || publishOutcomeUnclear} onClick={() => setStage("preview")}>Back to preview</button><button className="button-primary" type="button" disabled={busy || publishOutcomeUnclear} onClick={() => void publish()}>{busy ? "Publishing…" : "Confirm and publish job"} <Check size={14} /></button></div>
+    </div>}
   </section>;
 }
 
@@ -447,7 +615,7 @@ function JobDetail({
   onTransition: (proposalId: string, action: "submit" | "withdraw" | "shortlist" | "reject" | "invite_interview") => void;
   onOffer: (proposal: Proposal, input: { terms: string; amount: string; timeline: string; key: string }) => Promise<void>;
   onRespondOffer: (offer: Offer, decision: "accept" | "decline") => void;
-  onReport: (reason: string, details: string) => Promise<void>; onEdit: () => void; proposalLoadFailed: boolean; onRetry: () => void;
+  onReport: (reason: string, details: string) => Promise<void>; onEdit: (mode?: "edit" | "preview") => void; proposalLoadFailed: boolean; onRetry: () => void;
 }) {
   const owner = job.isOwner === true;
   const proposalsForJob = proposals.filter((proposal) => proposal.jobId === job.id);
@@ -492,7 +660,7 @@ function JobDetail({
     <article className="marketplace-detail-card">
       <div className="marketplace-detail-top"><div><span className="marketplace-category">{job.category} · {job.experienceLevel}</span><h1>{job.title}</h1><p>{job.summary}</p></div><strong className="marketplace-budget">{jobBudget(job)}</strong></div>
       <div className="marketplace-detail-meta"><StatusPill status={job.status} /><span>{job.estimatedDays ? `Estimated ${job.estimatedDays} days` : "Timeline to discuss"}</span><span>Posted {new Date(job.createdAt).toLocaleDateString()}</span>{job.status === "published" && isFreelancer && <button type="button" className={`marketplace-outline-action${job.isFavorite ? " selected" : ""}`} onClick={onFavorite}><Bookmark size={14} />{job.isFavorite ? "Saved" : "Save job"}</button>}</div>
-      {owner && isClient && <div className="marketplace-owner-actions">{job.status === "draft" && <><button type="button" className="button-secondary" onClick={onEdit}>Edit draft</button><button type="button" className="button-primary" onClick={() => onChangeStatus("publish")}>Publish job <ArrowUpRight size={14} /></button><button type="button" className="marketplace-text-action" onClick={() => { if (window.confirm("Delete this draft listing? This action cannot be undone.")) onChangeStatus("delete"); }}>Delete draft</button></>}{job.status === "published" && <button type="button" className="button-secondary" onClick={() => onChangeStatus("close")}>Close applications</button>}{job.status === "closed" && <><button type="button" className="button-secondary" onClick={() => onChangeStatus("reopen")}>Reopen job</button><button type="button" className="button-secondary" onClick={() => onChangeStatus("archive")}>Archive</button></>}</div>}
+      {owner && isClient && <div className="marketplace-owner-actions">{job.status === "draft" && <><button type="button" className="button-secondary" onClick={() => onEdit("edit")}>Edit draft</button><button type="button" className="button-primary" onClick={() => onEdit("preview")}>Preview &amp; publish</button><button type="button" className="marketplace-text-action" onClick={() => { if (window.confirm("Delete this draft listing? This action cannot be undone.")) onChangeStatus("delete"); }}>Delete draft</button></>}{job.status === "published" && <button type="button" className="button-secondary" onClick={() => onChangeStatus("close")}>Close applications</button>}{job.status === "closed" && <><button type="button" className="button-secondary" onClick={() => onChangeStatus("reopen")}>Reopen job</button><button type="button" className="button-secondary" onClick={() => onChangeStatus("archive")}>Archive</button></>}</div>}
       <div className="marketplace-detail-section"><h2>About this project</h2><p>{job.description}</p></div>
       {job.requirements.length > 0 && <div className="marketplace-detail-section"><h2>Requirements</h2><ul>{job.requirements.map((requirement) => <li key={requirement}>{requirement}</li>)}</ul></div>}
       {job.skills.length > 0 && <div className="marketplace-detail-section"><h2>Skills</h2><div className="marketplace-job-tags">{job.skills.map((skill) => <span key={skill}>{skill}</span>)}</div></div>}

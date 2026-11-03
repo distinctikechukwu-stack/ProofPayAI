@@ -488,3 +488,31 @@
   .marketplace-comparison-print-grid { grid-template-columns:1fr; }
   .marketplace-comparison-print-card dl { grid-template-columns:1fr; }
 }
+
+/* Client job listing preview and publish confirmation */
+.marketplace-job-preview,.marketplace-job-confirmation { display:grid; gap:14px; }
+.marketplace-job-preview>h3,.marketplace-job-confirmation>h3 { margin:0; color:#30445e; font-size:15px; }
+.marketplace-job-preview>h3:focus,.marketplace-job-confirmation>h3:focus { outline:3px solid #9dc4f5; outline-offset:4px; border-radius:3px; }
+.marketplace-preview-note { margin:0; color:#64768d; font-size:11px; line-height:1.6; }
+.marketplace-job-preview-card { min-width:0; overflow-wrap:anywhere; }
+.marketplace-job-preview-card .marketplace-job-top { gap:16px; }
+.marketplace-job-preview-card .marketplace-job-top h2 { color:#2d4058; font-size:clamp(18px,2vw,22px); }
+.marketplace-job-preview-card .marketplace-detail-section { overflow-wrap:anywhere; white-space:normal; }
+.marketplace-job-preview-card .marketplace-detail-section h4,.marketplace-job-validation h4 { margin:0; color:#30445e; font-size:12px; }
+.marketplace-job-preview-card .marketplace-detail-section p { white-space:pre-wrap; }
+.marketplace-job-validation { padding:13px 15px; border:1px solid #efd7d5; border-radius:9px; color:#844843; background:#fff8f7; font-size:11px; line-height:1.55; }
+.marketplace-job-validation ul { display:grid; gap:5px; margin:8px 0 0; padding-left:20px; }
+.marketplace-job-confirmation>p { margin:0; color:#5e7087; font-size:12px; line-height:1.65; }
+.marketplace-job-confirmation dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:0; }
+.marketplace-job-confirmation dl>div { min-width:0; padding:12px; border:1px solid #e7ebf1; border-radius:8px; background:#fafbfd; }
+.marketplace-job-confirmation dt { margin-bottom:5px; color:#78879a; font-size:10px; }
+.marketplace-job-confirmation dd { margin:0; color:#344a64; font-size:12px; font-weight:650; overflow-wrap:anywhere; }
+.marketplace-job-preview .marketplace-form-actions button,.marketplace-job-confirmation .marketplace-form-actions button { min-height:44px; }
+.marketplace-job-preview button:focus-visible,.marketplace-job-confirmation button:focus-visible { outline:3px solid #245ca7; outline-offset:3px; }
+@media (max-width:600px) {
+  .marketplace-job-preview-card .marketplace-job-top { flex-direction:column; gap:10px; }
+  .marketplace-job-preview-card .marketplace-budget { text-align:left; }
+  .marketplace-job-confirmation dl { grid-template-columns:1fr; }
+  .marketplace-job-preview .marketplace-form-actions,.marketplace-job-confirmation .marketplace-form-actions { align-items:stretch; flex-direction:column; }
+  .marketplace-job-preview .marketplace-form-actions button,.marketplace-job-confirmation .marketplace-form-actions button { width:100%; }
+}

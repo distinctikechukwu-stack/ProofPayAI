@@ -46,6 +46,7 @@ const makeProposal = (overrides: Partial<Proposal> = {}): Proposal => ({
 function renderMarketplace({
   roles = ["client"],
   isOwner = true,
+  jobStatus = "published",
   proposals = [
     makeProposal({ id: "proposal-1", quoteMinor: "50000", timelineDays: 12, status: "submitted", createdAt: "2026-11-01T10:00:00.000Z" }),
     makeProposal({ id: "proposal-2", quoteMinor: "30000", timelineDays: 8, status: "shortlisted", createdAt: "2026-11-01T09:00:00.000Z", coverLetter: "I can deliver this in a focused first release." }),
@@ -57,6 +58,7 @@ function renderMarketplace({
 }: {
   roles?: string[];
   isOwner?: boolean;
+  jobStatus?: "draft" | "published" | "closed" | "archived";
   proposals?: Proposal[];
   proposalLoader?: () => Promise<{ proposals: Proposal[] }>;
   portfolio?: { id: string; title: string }[];
@@ -74,8 +76,10 @@ function renderMarketplace({
       description: "Create a polished website with accessible navigation and clear product information.", requirements: ["Responsive layout"], skills: ["React"],
       category: "Development", experienceLevel: "intermediate", projectType: "fixed", fixedBudgetMinor: "60000",
       hourlyRateMinMinor: null, hourlyRateMaxMinor: null, currency: "USD", estimatedDays: 30,
-      status: "published", createdAt: "2026-10-30T10:00:00.000Z",
+      status: jobStatus, createdAt: "2026-10-30T10:00:00.000Z",
     } };
+    if (path === "/api/jobs" && options?.method === "POST") return { jobId };
+    if (path === `/api/jobs/${jobId}/status` && options?.method === "POST") return {};
     if (path === `/api/jobs/${jobId}/proposals` && options?.method === "POST") return { proposalId: "proposal-created" };
     if (path === `/api/jobs/${jobId}/proposals`) return proposalLoader();
     if (typeof path === "string" && path.startsWith("/api/proposals/") && path.endsWith("/transition")) return {};
@@ -86,6 +90,35 @@ function renderMarketplace({
   return render(<MemoryRouter initialEntries={[`/app/opportunities/${jobId}`]}>
     <Routes><Route path="/app/opportunities/:jobId" element={<OpportunitiesPage />} /></Routes>
   </MemoryRouter>);
+}
+
+function renderClientJobPostList(apiOverride?: (path: string, options?: { method?: string; body?: unknown }) => unknown | undefined | Promise<unknown | undefined>) {
+  mocks.apiRequest.mockImplementation(async (path: string, options?: { method?: string; body?: unknown }) => {
+    if (apiOverride) {
+      const overridden = await apiOverride(path, options);
+      if (overridden !== undefined) return overridden;
+    }
+    if (path === "/api/profile") return { roles: ["client"], portfolio: [] };
+    if (path === "/api/offers") return { offers: [] };
+    if (path === "/api/jobs" && options?.method !== "POST") return { jobs: [] };
+    if (typeof path !== "string") return {};
+    throw new Error("Unexpected API request: " + path);
+  });
+  return render(<MemoryRouter initialEntries={["/app/opportunities"]}>
+    <Routes><Route path="/app/opportunities" element={<OpportunitiesPage />} /><Route path="/app/opportunities/:jobId" element={<OpportunitiesPage />} /></Routes>
+  </MemoryRouter>);
+}
+
+function enterValidJobDetails() {
+  fireEvent.change(screen.getByRole("textbox", { name: "Job title" }), { target: { value: "Build a booking dashboard" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Short summary" }), { target: { value: "Create an accessible booking flow for local clinics." } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Full description" }), { target: { value: "Create a responsive booking dashboard with accessible controls, confirmations, and a clear staff handoff." } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Category" }), { target: { value: "Healthcare software" } });
+  fireEvent.change(screen.getByRole("textbox", { name: /Requirements/ }), { target: { value: "Keyboard accessible booking form\nAccessible confirmations" } });
+  fireEvent.change(screen.getByRole("textbox", { name: /Skills/ }), { target: { value: "React, WCAG" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Fixed budget (USD)" }), { target: { value: "1250.00" } });
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Estimated duration in days" }), { target: { value: "21" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "Experience" }), { target: { value: "expert" } });
 }
 
 describe("client proposal comparison", () => {
@@ -600,5 +633,230 @@ describe("freelancer saved job-search presets", () => {
 
     expect(await screen.findByText(/no marketplace jobs yet/i)).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Saved job searches" })).not.toBeInTheDocument();
+  });
+
+  describe("client job preview before publishing", () => {
+    beforeEach(() => { vi.restoreAllMocks(); installLocalStorage(); mocks.apiRequest.mockReset(); mocks.user = { id: "job-post-client" }; });
+
+    it("previews all entered listing details without creating a job and preserves them when returning to edit", async () => {
+      const user = userEvent.setup();
+      renderClientJobPostList();
+      await user.click(await screen.findByRole("button", { name: "Post a job" }));
+      enterValidJobDetails();
+      await user.click(screen.getByRole("button", { name: "Preview listing" }));
+
+      expect(await screen.findByRole("heading", { name: "Preview your job listing" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Build a booking dashboard" })).toBeInTheDocument();
+      expect(screen.getByText("Create an accessible booking flow for local clinics.")).toBeInTheDocument();
+      expect(screen.getByText("Create a responsive booking dashboard with accessible controls, confirmations, and a clear staff handoff.")).toBeInTheDocument();
+      expect(screen.getByText("Healthcare software · Expert")).toBeInTheDocument();
+      expect(screen.getByText("$1,250.00 USD fixed price")).toBeInTheDocument();
+      expect(screen.getByText("Fixed price · 21 day estimate")).toBeInTheDocument();
+      expect(screen.getByText("Keyboard accessible booking form")).toBeInTheDocument();
+      expect(screen.getByText("Accessible confirmations")).toBeInTheDocument();
+      expect(screen.getByText("React")).toBeInTheDocument();
+      expect(screen.getByText("WCAG")).toBeInTheDocument();
+      expect(screen.getByText("Preview only. Opening this screen has not created or published a job.")).toBeInTheDocument();
+      expect(mocks.apiRequest.mock.calls.some(([path, options]) => path === "/api/jobs" && options?.method === "POST")).toBe(false);
+
+      await user.click(screen.getByRole("button", { name: "Back to edit" }));
+      expect(screen.getByRole("textbox", { name: "Job title" })).toHaveValue("Build a booking dashboard");
+      expect(screen.getByRole("textbox", { name: "Full description" })).toHaveValue("Create a responsive booking dashboard with accessible controls, confirmations, and a clear staff handoff.");
+      expect(screen.getByRole("textbox", { name: "Fixed budget (USD)" })).toHaveValue("1250.00");
+      expect(screen.getByRole("spinbutton", { name: "Estimated duration in days" })).toHaveValue(21);
+      expect(screen.getByRole("textbox", { name: "Job title" })).toHaveFocus();
+    });
+
+    it("uses shared validation before confirmation and lets the client cancel confirmation", async () => {
+      const user = userEvent.setup();
+      renderClientJobPostList();
+      await user.click(await screen.findByRole("button", { name: "Post a job" }));
+      await user.click(screen.getByRole("button", { name: "Preview listing" }));
+
+      expect(await screen.findByRole("heading", { name: "Preview your job listing" })).toBeInTheDocument();
+      const errors = screen.getByRole("alert");
+      expect(errors).toHaveTextContent("Job title");
+      expect(errors).toHaveTextContent("Short summary");
+      expect(errors).toHaveTextContent("Description");
+      expect(errors).toHaveTextContent("Requirements");
+      expect(errors).toHaveTextContent("Fixed budget");
+      expect(screen.getByRole("button", { name: "Continue to publish confirmation" })).toBeDisabled();
+      expect(mocks.apiRequest.mock.calls.some(([path, options]) => path === "/api/jobs" && options?.method === "POST")).toBe(false);
+
+      await user.click(screen.getByRole("button", { name: "Back to edit" }));
+      enterValidJobDetails();
+      await user.click(screen.getByRole("button", { name: "Preview listing" }));
+      const continueButton = screen.getByRole("button", { name: "Continue to publish confirmation" });
+      continueButton.focus();
+      await user.keyboard("{Enter}");
+      expect(await screen.findByRole("heading", { name: "Ready to publish?" })).toBeInTheDocument();
+      expect(screen.getByText(/confirming that this listing is ready for applicants/i)).toBeInTheDocument();
+      const backButton = screen.getByRole("button", { name: "Back to preview" });
+      backButton.focus();
+      await user.keyboard("{Enter}");
+      expect(await screen.findByRole("heading", { name: "Freelancer listing preview" })).toBeInTheDocument();
+      expect(mocks.apiRequest.mock.calls.some(([path, options]) => path === "/api/jobs" && options?.method === "POST")).toBe(false);
+    });
+
+    it("previews hourly ranges with their currency and identifies an unspecified optional timeline", async () => {
+      const user = userEvent.setup();
+      renderClientJobPostList();
+      await user.click(await screen.findByRole("button", { name: "Post a job" }));
+      enterValidJobDetails();
+      await user.selectOptions(screen.getByRole("combobox", { name: "Project type" }), "hourly");
+      fireEvent.change(screen.getByRole("textbox", { name: "Minimum hourly rate (USD)" }), { target: { value: "45.25" } });
+      fireEvent.change(screen.getByRole("textbox", { name: "Maximum hourly rate (USD)" }), { target: { value: "80" } });
+      fireEvent.change(screen.getByRole("spinbutton", { name: "Estimated duration in days" }), { target: { value: "" } });
+      await user.click(screen.getByRole("button", { name: "Preview listing" }));
+
+      expect(await screen.findByText("$45.25–$80.00 USD / hour")).toBeInTheDocument();
+      expect(screen.getByText("Hourly · Timeline not specified")).toBeInTheDocument();
+      expect(mocks.apiRequest.mock.calls.some(([path, options]) => path === "/api/jobs" && options?.method === "POST")).toBe(false);
+    });
+
+    it("requires a final action and prevents repeated publish requests", async () => {
+      const user = userEvent.setup();
+      let finishPublish: (() => void) | undefined;
+      const pendingPublish = new Promise<void>((resolve) => { finishPublish = resolve; });
+      renderClientJobPostList((path, options) => {
+        if (path === "/api/jobs" && options?.method === "POST") return { jobId: "20000000-0000-4000-8000-000000000001" };
+        if (path === "/api/jobs/20000000-0000-4000-8000-000000000001/status") return pendingPublish.then(() => ({}));
+        return undefined;
+      });
+      await user.click(await screen.findByRole("button", { name: "Post a job" }));
+      enterValidJobDetails();
+      await user.click(screen.getByRole("button", { name: "Preview listing" }));
+      await user.click(screen.getByRole("button", { name: "Continue to publish confirmation" }));
+
+      expect(await screen.findByRole("heading", { name: "Ready to publish?" })).toBeInTheDocument();
+      const publishButton = screen.getByRole("button", { name: "Confirm and publish job" });
+      fireEvent.click(publishButton);
+      fireEvent.click(publishButton);
+      expect(await screen.findByText("Saving the draft and publishing the listing…")).toBeInTheDocument();
+      const createCalls = mocks.apiRequest.mock.calls.filter(([path, options]) => path === "/api/jobs" && options?.method === "POST");
+      expect(createCalls).toHaveLength(1);
+      const statusCalls = mocks.apiRequest.mock.calls.filter(([path, options]) => path === "/api/jobs/20000000-0000-4000-8000-000000000001/status" && options?.method === "POST");
+      expect(statusCalls).toHaveLength(1);
+      expect(statusCalls[0]?.[1]?.body).toEqual({ action: "publish" });
+
+      finishPublish?.();
+      expect(await screen.findByText("Job published. It is now available to freelancers.")).toHaveAttribute("role", "status");
+    });
+
+    it("keeps a saved draft and entered fields available after a publish failure, then retries the same job", async () => {
+      const user = userEvent.setup();
+      let statusAttempts = 0;
+      const createdJobId = "20000000-0000-4000-8000-000000000002";
+      renderClientJobPostList((path, options) => {
+        if (path === "/api/jobs" && options?.method === "POST") return { jobId: createdJobId };
+        if (path === `/api/jobs/${createdJobId}`) return { job: { status: "draft" } };
+        if (path === `/api/jobs/${createdJobId}/status`) {
+          statusAttempts += 1;
+          if (statusAttempts === 1) throw new Error("Temporary publish failure.");
+          return {};
+        }
+        return undefined;
+      });
+      await user.click(await screen.findByRole("button", { name: "Post a job" }));
+      enterValidJobDetails();
+      await user.click(screen.getByRole("button", { name: "Preview listing" }));
+      await user.click(screen.getByRole("button", { name: "Continue to publish confirmation" }));
+      await user.click(screen.getByRole("button", { name: "Confirm and publish job" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("status was verified as draft, so publishing can be safely retried");
+      expect(screen.getByRole("heading", { name: "Ready to publish?" })).toBeInTheDocument();
+      expect(screen.getByText("Build a booking dashboard")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "Confirm and publish job" }));
+      expect(await screen.findByText("Job published. It is now available to freelancers.")).toHaveAttribute("role", "status");
+      const saveCalls = mocks.apiRequest.mock.calls.filter(([path, options]) => path === "/api/jobs" && options?.method === "POST");
+      expect(saveCalls).toHaveLength(2);
+      expect((saveCalls[0]?.[1]?.body as { id?: string | null }).id).toBeNull();
+      expect((saveCalls[1]?.[1]?.body as { id?: string | null }).id).toBe(createdJobId);
+      expect(statusAttempts).toBe(2);
+    });
+
+    it("blocks retry after an ambiguous publish failure until explicit status verification", async () => {
+      const user = userEvent.setup();
+      const createdJobId = "20000000-0000-4000-8000-000000000003";
+      let statusAttempts = 0;
+      let verifyAttempts = 0;
+      renderClientJobPostList((path, options) => {
+        if (path === "/api/jobs" && options?.method === "POST") return { jobId: createdJobId };
+        if (path === `/api/jobs/${createdJobId}/status`) {
+          statusAttempts += 1;
+          throw new Error("Connection lost after request.");
+        }
+        if (path === `/api/jobs/${createdJobId}`) {
+          verifyAttempts += 1;
+          if (verifyAttempts === 1) throw new Error("Status lookup timed out.");
+          if (verifyAttempts >= 3) return { job: { status: "published" } };
+          return { job: { status: "draft" } };
+        }
+        return undefined;
+      });
+      await user.click(await screen.findByRole("button", { name: "Post a job" }));
+      enterValidJobDetails();
+      await user.click(screen.getByRole("button", { name: "Preview listing" }));
+      await user.click(screen.getByRole("button", { name: "Continue to publish confirmation" }));
+      await user.click(screen.getByRole("button", { name: "Confirm and publish job" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("Do not retry until you verify its status");
+      expect(screen.getByRole("button", { name: "Confirm and publish job" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Back to preview" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Close job form" })).toBeDisabled();
+      expect(statusAttempts).toBe(1);
+
+      await user.click(screen.getByRole("button", { name: "Verify publish status" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent("Status verified: this listing is still a draft. You can safely retry publishing.");
+      expect(screen.getByRole("button", { name: "Confirm and publish job" })).toBeEnabled();
+      await user.click(screen.getByRole("button", { name: "Confirm and publish job" }));
+      expect(await screen.findByText("Job published. It is now available to freelancers.")).toHaveAttribute("role", "status");
+      expect(statusAttempts).toBe(2);
+    });
+
+    it("treats a publish timeout as success when the authenticated status lookup confirms publication", async () => {
+      const user = userEvent.setup();
+      const createdJobId = "20000000-0000-4000-8000-000000000004";
+      let publishAttempts = 0;
+      renderClientJobPostList((path, options) => {
+        if (path === "/api/jobs" && options?.method === "POST") return { jobId: createdJobId };
+        if (path === `/api/jobs/${createdJobId}/status`) {
+          publishAttempts += 1;
+          throw new Error("Connection lost after request.");
+        }
+        if (path === `/api/jobs/${createdJobId}`) return { job: { status: "published" } };
+        return undefined;
+      });
+      await user.click(await screen.findByRole("button", { name: "Post a job" }));
+      enterValidJobDetails();
+      await user.click(screen.getByRole("button", { name: "Preview listing" }));
+      await user.click(screen.getByRole("button", { name: "Continue to publish confirmation" }));
+      await user.click(screen.getByRole("button", { name: "Confirm and publish job" }));
+
+      expect(await screen.findByText("Job published. It is now available to freelancers.")).toHaveAttribute("role", "status");
+      expect(publishAttempts).toBe(1);
+    });
+
+    it("routes an existing client-owned draft through preview and confirmation before saving or publishing", async () => {
+      const user = userEvent.setup();
+      renderMarketplace({ jobStatus: "draft" });
+      await user.click(await screen.findByRole("button", { name: "Preview & publish" }));
+      expect(await screen.findByRole("heading", { name: "Preview your job listing" })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { level: 1, name: "Build a product site" })).toBeInTheDocument();
+      expect(mocks.apiRequest.mock.calls.some(([path, options]) => path === "/api/jobs" && options?.method === "POST")).toBe(false);
+      expect(mocks.apiRequest.mock.calls.some(([path, options]) => path === `/api/jobs/${jobId}/status` && options?.method === "POST")).toBe(false);
+
+      await user.click(screen.getByRole("button", { name: "Continue to publish confirmation" }));
+      await user.click(screen.getByRole("button", { name: "Confirm and publish job" }));
+      expect(await screen.findByText("Job published. It is now available to freelancers.")).toHaveAttribute("role", "status");
+      expect(mocks.apiRequest).toHaveBeenCalledWith("/api/jobs", expect.objectContaining({ method: "POST", body: expect.objectContaining({ id: jobId }) }));
+      expect(mocks.apiRequest).toHaveBeenCalledWith(`/api/jobs/${jobId}/status`, { method: "POST", body: { action: "publish" } });
+    });
+
+    it("stacks preview and confirmation controls on narrow screens", () => {
+      expect(marketplaceStyles).toMatch(/@media\s*\(max-width:\s*600px\)[\s\S]*\.marketplace-job-preview-card\s+\.marketplace-job-top\s*\{\s*flex-direction:\s*column/);
+      expect(marketplaceStyles).toMatch(/\.marketplace-job-confirmation\s+\.marketplace-form-actions\s+button\s*\{\s*width:\s*100%/);
+      expect(marketplaceStyles).toMatch(/\.marketplace-job-preview\s+\.marketplace-form-actions\s+button:focus-visible|\.marketplace-job-preview\s+button:focus-visible/);
+    });
   });
 });

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ArrowLeft, ArrowUpRight, Bookmark, BriefcaseBusiness, Check, CircleAlert, Flag, Plus, Search, Send, X } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
+import { ActiveJobFilterChips, type ActiveJobFilterId } from "../components/ActiveJobFilterChips";
 import { PageHeading, StatusPill } from "../components/WorkspacePrimitives";
 import { SavedJobSearchPresets, type JobSearchFilters } from "../components/SavedJobSearchPresets";
 import { useAuth } from "../contexts/AuthContext";
@@ -236,6 +237,22 @@ export function OpportunitiesPage() {
     setSavedOnly(filters.savedOnly);
   };
 
+  const removeJobFilter = (filter: ActiveJobFilterId) => {
+    if (filter === "keyword") setSearch("");
+    else if (filter === "category") setCategory("");
+    else if (filter === "projectType") setProjectType("");
+    else if (filter === "experience") setExperience("");
+    else if (filter === "skill") setSkill("");
+    else if (filter === "budget") { setBudgetMin(""); setBudgetMax(""); setBudgetCurrency("USD"); }
+    else if (filter === "savedOnly") setSavedOnly(false);
+    else if (filter === "sort") setSort("recent");
+  };
+
+  const clearJobFilters = () => {
+    setSearch(""); setCategory(""); setProjectType(""); setExperience(""); setSkill("");
+    setBudgetMin(""); setBudgetMax(""); setBudgetCurrency("USD"); setSort("recent"); setSavedOnly(false);
+  };
+
   const refresh = () => setRefreshKey((current) => current + 1);
   const toggleFavorite = async (job: Job) => {
     if (!user) return;
@@ -340,7 +357,7 @@ export function OpportunitiesPage() {
     </> : <>
       {isClient && <div className="marketplace-role-note"><strong>Client account</strong><span>Post and manage a job listing. Review applicants and send offers from the job details.</span></div>}
       <section className="marketplace-toolbar">
-        <label className="marketplace-search"><Search size={16} /><input aria-label="Search jobs" placeholder="Search roles, skills, or requirements" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+        <label className="marketplace-search"><Search size={16} /><input id="marketplace-job-search" aria-label="Search jobs" placeholder="Search roles, skills, or requirements" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
         <select aria-label="Category filter" value={category} onChange={(event) => setCategory(event.target.value)}><option value="">All categories</option>{category && !jobs.some((job) => job.category === category) && <option value={category}>Previously saved: {category}</option>}{[...new Set(jobs.map((job) => job.category))].sort().map((item) => <option key={item}>{item}</option>)}</select>
         <select aria-label="Project type filter" value={projectType} onChange={(event) => setProjectType(event.target.value)}><option value="">Fixed or hourly</option><option value="fixed">Fixed price</option><option value="hourly">Hourly</option></select>
         <select aria-label="Experience filter" value={experience} onChange={(event) => setExperience(event.target.value)}><option value="">Any experience</option><option value="entry">Entry level</option><option value="intermediate">Intermediate</option><option value="expert">Expert</option></select>
@@ -349,12 +366,17 @@ export function OpportunitiesPage() {
         <select aria-label="Sort jobs" value={sort} onChange={(event) => setSort(event.target.value)}><option value="recent">Most recent</option><option value="budget_low">Budget: low to high</option><option value="budget_high">Budget: high to low</option></select>
         {isFreelancer && <button className={`marketplace-filter-chip${savedOnly ? " selected" : ""}`} type="button" aria-pressed={savedOnly} onClick={() => setSavedOnly(!savedOnly)}><Bookmark size={13} /> Saved jobs</button>}
       </section>
+      <ActiveJobFilterChips
+        filters={{ keyword: search, category, projectType, experience, skill, budgetMin, budgetMax, budgetCurrency, sort, savedOnly }}
+        onRemove={removeJobFilter}
+        onClearFilters={clearJobFilters}
+      />
       {isFreelancer && user?.id && <SavedJobSearchPresets key={user.id} userId={user.id} filters={{ keyword: search, category, projectType: projectType as JobSearchFilters["projectType"], experience: experience as JobSearchFilters["experience"], skill, budgetMin, budgetMax, budgetCurrency, sort: sort as JobSearchFilters["sort"], savedOnly }} onApply={applySavedSearch} />}
       {loading ? <div className="marketplace-empty" role="status">Loading marketplace listings…</div> : filteredJobs.length ? <div className="marketplace-job-list">{filteredJobs.map((job) => <article className="marketplace-job-card" key={job.id}>
         <div className="marketplace-job-top"><div><span className="marketplace-category">{job.category} · {job.experienceLevel}</span><h2><Link to={`/app/opportunities/${job.id}`}>{job.title}<ArrowUpRight size={14} /></Link></h2><p>{job.summary}</p></div><strong className="marketplace-budget">{jobBudget(job)}</strong></div>
         <div className="marketplace-job-tags">{job.skills.slice(0, 5).map((skill) => <span key={skill}>{skill}</span>)}</div>
         <div className="marketplace-job-bottom"><span>{job.status === "published" ? "Open for proposals" : job.status.replaceAll("_", " ")} · {job.estimatedDays ? `${job.estimatedDays} day estimate` : "Timeline to discuss"}</span><div>{isFreelancer && job.status === "published" && <button className={`marketplace-icon-action${job.isFavorite ? " saved" : ""}`} type="button" aria-label={job.isFavorite ? "Remove saved job" : "Save job"} onClick={() => void toggleFavorite(job)}><Bookmark size={15} fill={job.isFavorite ? "currentColor" : "none"} /></button>}<Link className="marketplace-open-link" to={`/app/opportunities/${job.id}`}>View details <ArrowUpRight size={13} /></Link></div></div>
-      </article>)}</div> : <div className="marketplace-empty"><Search size={22} /><h2>{jobs.length ? "No matching jobs" : "No marketplace jobs yet"}</h2><p>{jobs.length ? "Adjust a filter to look at more listings." : isClient ? "Post a draft listing, review its details, then publish it for applicants." : "Published opportunities will appear here when clients post jobs."}</p>{jobs.length > 0 && <button className="button-secondary" type="button" onClick={() => { setSearch(""); setCategory(""); setProjectType(""); setExperience(""); setSkill(""); setBudgetMin(""); setBudgetMax(""); setSavedOnly(false); }}>Clear filters</button>}</div>}
+      </article>)}</div> : <div className="marketplace-empty"><Search size={22} /><h2>{jobs.length ? "No matching jobs" : "No marketplace jobs yet"}</h2><p>{jobs.length ? "Adjust a filter to look at more listings." : isClient ? "Post a draft listing, review its details, then publish it for applicants." : "Published opportunities will appear here when clients post jobs."}</p></div>}
       {offers.length > 0 && <section className="marketplace-offers-panel"><div className="marketplace-section-heading"><div><span className="eyebrow">YOUR INBOX</span><h2>Offers</h2></div><span>{offers.filter((offer) => offer.isRecipient && offer.status === "sent").length} awaiting your response</span></div>{offers.map((offer) => <OfferRow key={offer.id} offer={offer} onRespond={respondOffer} />)}</section>}
     </>}
   </>;

@@ -325,6 +325,39 @@ describe("freelancer saved job-search presets", () => {
     expect(screen.getByRole("button", { name: "Saved jobs" })).toHaveAttribute("aria-pressed", "true");
     const cards = Array.from(view.container.querySelectorAll(".marketplace-job-card h2")).map((heading) => heading.textContent);
     expect(cards).toEqual(["React Search Affordable", "React Search Expensive"]);
+
+    const activeFilters = screen.getByRole("region", { name: "Active job-search filters" });
+    expect(within(activeFilters).getAllByRole("button", { name: "Clear filters" })).toHaveLength(1);
+    expect(within(activeFilters).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "Keyword: React", "Category: Development", "Project type: Fixed price", "Experience: Intermediate",
+      "Skill: TypeScript", "Budget (USD): minimum 500, maximum 900", "Saved jobs only", "Sort: Budget: low to high", "Clear filters",
+    ]);
+
+    await user.clear(screen.getByRole("textbox", { name: "Search jobs" }));
+    await user.type(screen.getByRole("textbox", { name: "Search jobs" }), "Vue");
+    expect(screen.getByRole("button", { name: "Remove keyword filter: Vue" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "No matching jobs" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(screen.queryByRole("region", { name: "Active job-search filters" })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Search jobs" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Category filter" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Project type filter" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Experience filter" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Skill filter" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Minimum budget" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Maximum budget" })).toHaveValue("");
+    expect(screen.getByRole("textbox", { name: "Budget currency" })).toHaveValue("USD");
+    expect(screen.getByRole("combobox", { name: "Sort jobs" })).toHaveValue("recent");
+    expect(screen.getByRole("button", { name: "Saved jobs" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("textbox", { name: "Search jobs" })).toHaveFocus();
+    expect(view.container.querySelectorAll(".marketplace-job-card")).toHaveLength(jobs.length);
+
+    await user.click(screen.getByRole("button", { name: "Apply saved search Saved React jobs" }));
+    expect(screen.getByRole("button", { name: "Remove keyword filter: React" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Remove category filter: Development" }));
+    expect(screen.getByRole("combobox", { name: "Category filter" })).toHaveValue("");
+    expect(await screen.findByText("React Search Other Category")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove project type filter: Fixed price" })).toBeInTheDocument();
   });
 
   it("does not expose saved-search controls to an authenticated client", async () => {

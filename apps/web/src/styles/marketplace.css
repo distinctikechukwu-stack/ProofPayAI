@@ -2,6 +2,16 @@
 .marketplace-toolbar>select,.marketplace-toolbar>input,.marketplace-catalog-toolbar>select { min-height:35px; max-width:180px; padding:7px 10px; border:1px solid #e1e6ed; border-radius:7px; color:#52647c; background:#fff; font:inherit; font-size:9px; }
 .marketplace-search { display:flex; align-items:center; flex:1 1 240px; gap:8px; min-height:35px; padding:0 10px; border:1px solid #e1e6ed; border-radius:7px; color:#8290a1; }
 .marketplace-search input { width:100%; min-width:0; border:0; outline:0; color:#31445d; background:transparent; font:inherit; font-size:10px; }
+.marketplace-active-filters { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:-5px 0 14px; }
+.marketplace-active-filter-list { display:flex; flex:1; flex-wrap:wrap; gap:7px; min-width:0; margin:0; padding:0; list-style:none; }
+.marketplace-active-filter-list>li { min-width:0; max-width:100%; }
+.marketplace-active-filter-chip { display:inline-flex; align-items:center; justify-content:flex-start; gap:7px; max-width:100%; min-height:40px; padding:7px 10px; border:1px solid #d6e1ee; border-radius:999px; color:#355579; background:#f5f8fc; font:inherit; font-size:11px; line-height:1.35; overflow-wrap:anywhere; text-align:left; cursor:pointer; }
+.marketplace-active-filter-chip:hover { border-color:#aac0db; background:#edf3fa; }
+.marketplace-active-filter-chip span { min-width:0; }
+.marketplace-active-filter-chip svg { flex:0 0 auto; color:#71839a; }
+.marketplace-clear-filters { flex:0 0 auto; min-height:40px; padding:7px 10px; border:1px solid #dce4ed; border-radius:7px; color:#536a86; background:#fff; font:inherit; font-size:11px; font-weight:650; cursor:pointer; }
+.marketplace-clear-filters:hover { background:#f6f8fb; }
+.marketplace-active-filter-chip:focus-visible,.marketplace-clear-filters:focus-visible { outline:3px solid #245ca7; outline-offset:2px; }
 .marketplace-budget-filter { display:flex; align-items:center; gap:5px; color:#7b899b; font-size:8px; }
 .marketplace-budget-filter input { width:68px; min-height:33px; padding:6px; border:1px solid #e1e6ed; border-radius:6px; color:#41536a; font:inherit; font-size:9px; }
 .marketplace-budget-filter input:last-child { width:46px; text-transform:uppercase; }
@@ -396,6 +406,10 @@
   .marketplace-comparison-card { padding:12px; }
 }
 @media (max-width:560px) {
+  .marketplace-active-filters { align-items:stretch; flex-direction:column; }
+  .marketplace-active-filter-list { gap:6px; }
+  .marketplace-active-filter-chip { max-width:100%; }
+  .marketplace-clear-filters { align-self:flex-start; }
   .marketplace-presets { padding:13px; }
   .marketplace-presets-list>li { align-items:stretch; flex-direction:column; }
   .marketplace-preset-actions { justify-content:flex-start; }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import type { FreelancerProfileInput } from "@proofpay/shared";
 import { ArrowLeft, ArrowUpRight, ExternalLink, Plus, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeading } from "../components/WorkspacePrimitives";
@@ -61,6 +62,30 @@ function minorToInput(value: unknown, currency: string): string {
   const divisor = 10n ** BigInt(digits);
   const whole = (amount / divisor).toString();
   return digits ? `${whole}.${(amount % divisor).toString().padStart(digits, "0")}` : whole;
+}
+
+export function toFreelancerProfileRequestBody(draft: FreelancerDraft): FreelancerProfileInput {
+  return {
+    displayName: draft.displayName,
+    avatarUrl: draft.avatarUrl || null,
+    publicSlug: draft.publicSlug,
+    headline: draft.headline,
+    biography: draft.biography,
+    skills: draft.skills.split(",").map((item) => item.trim()).filter(Boolean),
+    experienceSummary: draft.experienceSummary,
+    educationSummary: draft.educationSummary,
+    languages: draft.languages.split(",").map((item) => item.trim()).filter(Boolean),
+    category: draft.category,
+    hourlyRateMinor: draft.hourlyRate.trim() ? moneyToMinor(draft.hourlyRate, draft.currency) : null,
+    currency: draft.currency,
+    availability: draft.availability,
+    isPublic: draft.isPublic,
+    portfolio: draft.portfolio.filter((item) => item.title.trim()).map((item) => ({
+      ...item,
+      projectUrl: item.projectUrl || null,
+      imageUrl: item.imageUrl || null,
+    })),
+  };
 }
 
 function formatHourlyRate(minor: string, currency: string): string {
@@ -160,23 +185,14 @@ export function ProfilePage() {
 
   const saveFreelancer = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setBusy("freelancer"); setError(""); setNotice("");
-    const rateMinor = freelancer.hourlyRate.trim() ? moneyToMinor(freelancer.hourlyRate, freelancer.currency) : null;
-    if (freelancer.hourlyRate.trim() && rateMinor === null) {
+    const body = toFreelancerProfileRequestBody(freelancer);
+    if (freelancer.hourlyRate.trim() && body.hourlyRateMinor === null) {
       setBusy(""); setError("Enter a positive hourly rate using the fraction digits supported by this currency."); return;
     }
     try {
       await apiRequest("/api/profile/freelancer", {
         method: "POST",
-        body: {
-          ...freelancer,
-          hourlyRateMinor: rateMinor,
-          skills: freelancer.skills.split(",").map((item) => item.trim()).filter(Boolean),
-          languages: freelancer.languages.split(",").map((item) => item.trim()).filter(Boolean),
-          avatarUrl: freelancer.avatarUrl || null,
-          portfolio: freelancer.portfolio.filter((item) => item.title.trim()).map((item) => ({
-            ...item, projectUrl: item.projectUrl || null, imageUrl: item.imageUrl || null,
-          })),
-        },
+        body,
       });
       setNotice(freelancer.isPublic ? "Freelancer profile saved and published." : "Freelancer profile saved as private.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Freelancer profile could not be saved."); }

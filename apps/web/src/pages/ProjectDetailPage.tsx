@@ -77,6 +77,14 @@ interface PersistedProjectResponse {
     amount_delta_minor: number | string; currency: string; schedule_delta_days: number; state: string;
     terms: { deliverables?: string[]; openQuestions?: string[]; analysisId?: string }; created_at: string;
   }>;
+  deliverables: Array<{
+    id: string; milestone_id: string; description: string; evidence_url: string | null;
+    has_private_file: boolean; created_at: string;
+  }>;
+  milestoneReviews: Array<{
+    id: string; milestone_id: string; deliverable_id: string | null; decision: "approved" | "request_revision";
+    note: string; created_at: string;
+  }>;
 }
 
 type EditableMilestone = {
@@ -356,6 +364,12 @@ function PersistedProjectDetail({ projectId, userId }: { projectId: string; user
               {creator && milestone.workflow_status === "agreed" && <button type="button" className="button-secondary" disabled={Boolean(busy)} onClick={() => void act(`start-${milestone.id}`, `/api/milestones/${milestone.id}/start`)}>Start milestone</button>}
               {creator && ["agreed", "in_progress", "revision_requested"].includes(milestone.workflow_status) && <form className="project-action-form" onSubmit={(event) => { event.preventDefault(); const values = new FormData(event.currentTarget); const operation = `deliver:${milestone.id}`; const idempotencyKey = idempotencyKeyFor(operation); void act(`deliver-${milestone.id}`, `/api/milestones/${milestone.id}/deliverables`, { description: String(values.get("description") ?? ""), evidenceUrl: String(values.get("evidenceUrl") ?? ""), idempotencyKey }, operation); }}><label>Submit deliverable evidence<input name="evidenceUrl" type="url" placeholder="https://…" required /></label><label>Work summary<input name="description" minLength={1} maxLength={2000} required /></label><button className="button-secondary" type="submit" disabled={Boolean(busy)}>Submit for client review</button></form>}
               {!creator && milestone.workflow_status === "submitted_for_review" && <div className="project-action-form"><button type="button" className="button-primary" disabled={Boolean(busy)} onClick={() => { const operation = `approve:${milestone.id}`; void act(`approve-${milestone.id}`, `/api/milestones/${milestone.id}/reviews`, { decision: "approved", note: "", idempotencyKey: idempotencyKeyFor(operation) }, operation); }}>Approve deliverable</button><form onSubmit={(event) => { event.preventDefault(); const values = new FormData(event.currentTarget); const operation = `revise:${milestone.id}`; void act(`revise-${milestone.id}`, `/api/milestones/${milestone.id}/reviews`, { decision: "request_revision", note: String(values.get("note") ?? ""), idempotencyKey: idempotencyKeyFor(operation) }, operation); }}><label>Revision note<input name="note" minLength={3} maxLength={4000} required /></label><button type="submit" className="button-secondary" disabled={Boolean(busy)}>Request revision</button></form></div>}
+              <MilestoneHistory
+                sequence={milestone.sequence}
+                workflowStatus={milestone.workflow_status}
+                submissions={record.deliverables.filter((item) => item.milestone_id === milestone.id)}
+                reviews={record.milestoneReviews.filter((item) => item.milestone_id === milestone.id)}
+              />
             </div><strong className="detail-milestone-amount">{formatMinor(milestone.amount_minor, milestone.currency)}</strong></article>)}</div>
           {draftCanEdit && draftPlan && <form className="draft-milestone-editor" onSubmit={(event) => void saveDraftMilestones(event)}>
             <div className="draft-milestone-editor-heading"><div><strong>{draftPlanSource === "ai" ? "AI suggestion · review and edit" : "Edit milestone plan"}</strong><p>Exact amounts must add up to {formatMinor(project.budget_minor, project.currency)}. Saving updates this draft only.</p></div><button type="button" className="button-secondary" onClick={() => { setDraftPlan(null); setDraftPlanSource(null); }} disabled={Boolean(busy)}>Cancel</button></div>
@@ -393,6 +407,64 @@ function PersistedProjectDetail({ projectId, userId }: { projectId: string; user
       <aside className="detail-side-column"><section className="surface-card project-summary-card"><SectionHeading title="Project details" /><SummaryRow label="Client" value={project.client_name} /><SummaryRow label="Project owner" value={creator ? "You" : "Project freelancer"} /><SummaryRow label="Project status" value={titleCase(project.status)} /><SummaryRow label="Contract type" value={project.contract_type === "hourly" ? "Hourly" : "Fixed price"} /><SummaryRow label="Deadline" value={project.deadline ?? "Not set"} /><SummaryRow label="Payment" value="PayPal Sandbox not configured" status /></section>{project.contract_type === "hourly" && <section className="surface-card project-messaging-card"><SectionHeading title="Hourly work" subtitle="Track time and review submitted entries." /><Link to={`/app/projects/${project.id}/hourly`} className="button-secondary"><Clock3 size={14} /> Open hourly workspace <ArrowRight size={14} /></Link></section>}<section className="surface-card project-messaging-card"><SectionHeading title="Project conversation" subtitle="Keep handoffs and decisions with this project's members." /><Link to={`/app/messages?projectId=${project.id}`} className="button-secondary"><MessageSquareText size={14} /> Open private conversation <ArrowRight size={14} /></Link></section><section className="agreement-version-card"><FileText size={15} /><span><strong>Agreement history</strong><small>{agreements.length} saved version{agreements.length === 1 ? "" : "s"}; accepted terms remain locked.</small></span><span className="version-count">{agreements.length}</span></section></aside>
     </div>
   </>;
+}
+
+function MilestoneHistory({
+  sequence, workflowStatus, submissions, reviews,
+}: {
+  sequence: number;
+  workflowStatus: string;
+  submissions: PersistedProjectResponse["deliverables"];
+  reviews: PersistedProjectResponse["milestoneReviews"];
+}) {
+  return <section className="milestone-history" aria-label={`Milestone ${sequence} submission and review history`}>
+    <h4>Submission history</h4>
+    {submissions.length > 0 ? <ol className="milestone-history-list">
+      {submissions.map((submission, index) => {
+        const evidenceUrl = safeEvidenceUrl(submission.evidence_url);
+        return <li className="milestone-history-entry" key={submission.id}>
+          <div className="milestone-history-heading">
+            <strong>Submission {index + 1}</strong>
+            <time dateTime={submission.created_at}>{formatHistoryDate(submission.created_at)}</time>
+          </div>
+          <p className="milestone-history-summary">{submission.description}</p>
+          {evidenceUrl
+            ? <a className="milestone-evidence-link" href={evidenceUrl.href} target="_blank" rel="noopener noreferrer">{evidenceUrl.href}</a>
+            : submission.evidence_url
+              ? <p className="milestone-history-muted">Saved evidence link is invalid or unsupported and was not made clickable.</p>
+              : null}
+          {submission.has_private_file && <p className="milestone-history-muted">A private file is attached. Its storage path and a public file URL are not exposed here.</p>}
+        </li>;
+      })}
+    </ol> : <p className="milestone-history-muted">{workflowStatus === "submitted_for_review" || workflowStatus === "revision_requested" ? "No submission evidence is available in the project record." : "No deliverable submissions yet."}</p>}
+
+    <h4>Review history</h4>
+    {reviews.length > 0 ? <ol className="milestone-history-list">
+      {reviews.map((review) => <li className="milestone-history-entry" key={review.id}>
+        <div className="milestone-history-heading">
+          <strong>Client review · {review.decision === "request_revision" ? "Revision requested" : "Approved"}</strong>
+          <time dateTime={review.created_at}>{formatHistoryDate(review.created_at)}</time>
+        </div>
+        {review.note.trim() ? <p className="milestone-review-note">{review.note}</p> : <p className="milestone-history-muted">No written feedback was added.</p>}
+      </li>)}
+    </ol> : <p className="milestone-history-muted">No client review is recorded yet.</p>}
+  </section>;
+}
+
+function safeEvidenceUrl(value: string | null): URL | null {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function formatHistoryDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? "Recorded time unavailable" : date.toLocaleString();
 }
 
 function ScopeRequest({

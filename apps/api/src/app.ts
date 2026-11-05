@@ -1864,9 +1864,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (!context) return;
     if (!isUuid(request.params.projectId)) return reply.code(400).send({ error: "Project ID must be a UUID." });
     const projectId = request.params.projectId;
-    const [projectResult, milestoneResult, agreementResult, scopeRequestResult, aiAnalysisResult, changeOrderResult] = await Promise.all([
-      context.client.from("projects").select("id,created_by,title,description,client_name,budget_minor,currency,contract_type,deadline,status,current_agreement_version_id,created_at,updated_at")
-        .eq("id", projectId).maybeSingle(),
+    const projectResult = await context.client.from("projects").select("id,created_by,title,description,client_name,budget_minor,currency,contract_type,deadline,status,current_agreement_version_id,created_at,updated_at")
+      .eq("id", projectId).maybeSingle();
+    if (projectResult.error) return rpcFailure(reply, projectResult.error);
+    if (!projectResult.data) return reply.code(404).send({ error: "The requested project was not found." });
+
+    const [milestoneResult, agreementResult, scopeRequestResult, aiAnalysisResult, changeOrderResult, deliverableResult, reviewResult] = await Promise.all([
       context.client.from("milestones").select("id,sequence,title,description,deliverables,acceptance_criteria,completion_conditions,amount_minor,currency,due_date,dependency_sequences,workflow_status")
         .eq("project_id", projectId).order("sequence", { ascending: true }),
       context.client.from("agreement_versions").select("id,version_number,state,title,scope_text,terms,total_minor,currency,created_at")
@@ -1877,14 +1880,23 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
         .eq("project_id", projectId).order("created_at", { ascending: false }),
       context.client.from("change_order_versions").select("id,change_request_id,version_number,title,description,amount_delta_minor,currency,schedule_delta_days,state,terms,created_at")
         .eq("project_id", projectId).order("created_at", { ascending: false }),
+      context.client.from("deliverables").select("id,milestone_id,description,evidence_url,created_at")
+        .eq("project_id", projectId).order("created_at", { ascending: true }),
+      context.client.from("milestone_reviews").select("id,milestone_id,deliverable_id,decision,note,created_at")
+        .eq("project_id", projectId).order("created_at", { ascending: true }),
     ]);
-    if (projectResult.error) return rpcFailure(reply, projectResult.error);
-    if (!projectResult.data) return reply.code(404).send({ error: "The requested project was not found." });
     if (milestoneResult.error) return rpcFailure(reply, milestoneResult.error);
     if (agreementResult.error) return rpcFailure(reply, agreementResult.error);
     if (scopeRequestResult.error) return rpcFailure(reply, scopeRequestResult.error);
     if (aiAnalysisResult.error) return rpcFailure(reply, aiAnalysisResult.error);
     if (changeOrderResult.error) return rpcFailure(reply, changeOrderResult.error);
+    if (deliverableResult.error) return rpcFailure(reply, deliverableResult.error);
+    if (reviewResult.error) return rpcFailure(reply, reviewResult.error);
+    const deliverables = (deliverableResult.data ?? []).map(toProjectDeliverableResponse);
+    const milestoneReviews = (reviewResult.data ?? []).map(toMilestoneReviewResponse);
+    if (deliverables.some((row) => row === null) || milestoneReviews.some((row) => row === null)) {
+      return reply.code(502).send({ error: "Project evidence history could not be loaded safely." });
+    }
     return {
       project: projectResult.data,
       milestones: milestoneResult.data ?? [],
@@ -1892,6 +1904,8 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
       scopeRequests: scopeRequestResult.data ?? [],
       aiAnalyses: aiAnalysisResult.data ?? [],
       changeOrders: changeOrderResult.data ?? [],
+      deliverables: deliverables.filter((row): row is NonNullable<typeof row> => row !== null),
+      milestoneReviews: milestoneReviews.filter((row): row is NonNullable<typeof row> => row !== null),
     };
   });
 
@@ -2335,6 +2349,59 @@ function stringArray(value: unknown): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+type ProjectDeliverableResponse = {
+  id: string;
+  milestone_id: string;
+  description: string;
+  evidence_url: string | null;
+  has_private_file: boolean;
+  created_at: string;
+};
+
+type MilestoneReviewResponse = {
+  id: string;
+  milestone_id: string;
+  deliverable_id: string | null;
+  decision: "approved" | "request_revision";
+  note: string;
+  created_at: string;
+};
+
+function toProjectDeliverableResponse(value: unknown): ProjectDeliverableResponse | null {
+  if (!isRecord(value)
+    || typeof value.id !== "string"
+    || typeof value.milestone_id !== "string"
+    || typeof value.description !== "string"
+    || !(typeof value.evidence_url === "string" || value.evidence_url === null)
+    || typeof value.created_at !== "string") return null;
+  return {
+    id: value.id,
+    milestone_id: value.milestone_id,
+    description: value.description,
+    evidence_url: value.evidence_url,
+    has_private_file: value.evidence_url === null,
+    created_at: value.created_at,
+  };
+}
+
+function toMilestoneReviewResponse(value: unknown): MilestoneReviewResponse | null {
+  if (!isRecord(value)
+    || typeof value.id !== "string"
+    || typeof value.milestone_id !== "string"
+    || !(typeof value.deliverable_id === "string" || value.deliverable_id === null)
+    || !(value.decision === "approved" || value.decision === "request_revision")
+    || typeof value.note !== "string"
+    || typeof value.created_at !== "string") return null;
+  return {
+    id: value.id,
+    milestone_id: value.milestone_id,
+    deliverable_id: value.deliverable_id,
+    decision: value.decision,
+    note: value.note,
+    created_at: value.created_at,
+  };
 }
 
 function isConfiguredSecret(value: string | undefined): boolean {

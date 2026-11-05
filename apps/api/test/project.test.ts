@@ -128,6 +128,68 @@ function timelineFactory() {
   return { create: vi.fn(() => client) as unknown as SupabaseFactory, client };
 }
 
+const projectDetailIds = {
+  project: "117a3dce-1981-4e85-ad72-34b236ff49ba",
+  milestone: "1d8f102d-0716-42d2-8c8c-82d1838f8314",
+  publicSubmission: "37df0650-a625-4d67-96be-57eaf4377794",
+  privateSubmission: "e8492a47-326b-4a4e-93a4-c071cf6f8ed7",
+  review: "d3fb1b75-c5e2-477d-93ca-127423203229",
+};
+
+function projectDetailFactory(options: { visibleProject?: boolean; userId?: string } = {}) {
+  const records: Record<string, Array<Record<string, unknown>>> = {
+    projects: [{
+      id: projectDetailIds.project, created_by: "freelancer-user", title: "Fictional project", description: "Project description",
+      client_name: "Fictional client", budget_minor: "60000", currency: "USD", contract_type: "fixed", deadline: null,
+      status: "in_progress", current_agreement_version_id: "agreement-version", created_at: "2026-11-01T10:00:00Z", updated_at: "2026-11-02T10:00:00Z",
+    }],
+    milestones: [{
+      id: projectDetailIds.milestone, project_id: projectDetailIds.project, sequence: 1, title: "Milestone 1", description: "Build the first deliverable",
+      deliverables: ["The first deliverable"], acceptance_criteria: ["Client review"], completion_conditions: ["Accepted"], amount_minor: "60000",
+      currency: "USD", due_date: null, dependency_sequences: [], workflow_status: "revision_requested",
+    }],
+    agreement_versions: [], change_requests: [], ai_analysis_records: [], change_order_versions: [],
+    deliverables: [
+      { id: projectDetailIds.publicSubmission, project_id: projectDetailIds.project, milestone_id: projectDetailIds.milestone, description: "First work summary", evidence_url: "https://evidence.example.test/first", storage_object_path: null, created_at: "2026-11-04T10:00:00Z" },
+      { id: projectDetailIds.privateSubmission, project_id: projectDetailIds.project, milestone_id: projectDetailIds.milestone, description: "Revised work summary", evidence_url: null, storage_object_path: `${projectDetailIds.project}/${projectDetailIds.milestone}/private-file.pdf`, created_at: "2026-11-04T11:00:00Z" },
+    ],
+    milestone_reviews: [{
+      id: projectDetailIds.review, project_id: projectDetailIds.project, milestone_id: projectDetailIds.milestone,
+      deliverable_id: projectDetailIds.publicSubmission, reviewed_by: "client-user", decision: "request_revision",
+      note: "Please include the agreed mobile layout.", idempotency_key: "private-idempotency-key", created_at: "2026-11-04T10:30:00Z",
+    }],
+  };
+  const filters = new Map<string, Array<{ column: string; value: unknown }>>();
+  const selectedColumns = new Map<string, string>();
+  const queriedTables: string[] = [];
+  const getUser = vi.fn(async () => ({ data: { user: { id: options.userId ?? "client-user" } }, error: null }));
+  const client = {
+    auth: { getUser },
+    from: vi.fn((table: string) => {
+      queriedTables.push(table);
+      const tableFilters: Array<{ column: string; value: unknown }> = [];
+      filters.set(table, tableFilters);
+      const matchingRows = () => (records[table] ?? []).filter((row) => tableFilters.every(({ column, value }) => row[column] === value));
+      const query = {
+        select: vi.fn((columns: string) => { selectedColumns.set(table, columns); return query; }),
+        eq: vi.fn((column: string, value: unknown) => { tableFilters.push({ column, value }); return query; }),
+        order: vi.fn(async () => ({ data: matchingRows(), error: null })),
+        maybeSingle: vi.fn(async () => ({ data: table === "projects" && options.visibleProject === false ? null : matchingRows()[0] ?? null, error: null })),
+      };
+      return query;
+    }),
+    rpc: vi.fn(async () => ({ data: null, error: null })),
+  } as unknown as SupabasePort;
+  return {
+    create: vi.fn(() => client) as unknown as SupabaseFactory,
+    client,
+    getUser,
+    filters,
+    selectedColumns,
+    queriedTables,
+  };
+}
+
 describe("authenticated project API", () => {
   let app: Awaited<ReturnType<typeof buildApp>> | undefined;
   afterEach(async () => {
@@ -275,6 +337,56 @@ describe("authenticated project API", () => {
     });
     expect(response.statusCode).toBe(404);
     expect(response.body).not.toContain("private database detail");
+  });
+
+  it("returns project-scoped deliverable summaries and review feedback to an authenticated project member", async () => {
+    const supabase = projectDetailFactory();
+    app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
+    const response = await app.inject({
+      method: "GET", url: `/api/projects/${projectDetailIds.project}`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(supabase.getUser).toHaveBeenCalledWith("valid-token");
+    expect(supabase.filters.get("deliverables")).toContainEqual({ column: "project_id", value: projectDetailIds.project });
+    expect(supabase.filters.get("milestone_reviews")).toContainEqual({ column: "project_id", value: projectDetailIds.project });
+    expect(response.json().deliverables).toEqual([
+      {
+        id: projectDetailIds.publicSubmission, milestone_id: projectDetailIds.milestone, description: "First work summary",
+        evidence_url: "https://evidence.example.test/first", has_private_file: false, created_at: "2026-11-04T10:00:00Z",
+      },
+      {
+        id: projectDetailIds.privateSubmission, milestone_id: projectDetailIds.milestone, description: "Revised work summary",
+        evidence_url: null, has_private_file: true, created_at: "2026-11-04T11:00:00Z",
+      },
+    ]);
+    expect(response.json().milestoneReviews).toEqual([{
+      id: projectDetailIds.review, milestone_id: projectDetailIds.milestone, deliverable_id: projectDetailIds.publicSubmission,
+      decision: "request_revision", note: "Please include the agreed mobile layout.", created_at: "2026-11-04T10:30:00Z",
+    }]);
+    expect(response.body).not.toContain("storage_object_path");
+    expect(response.body).not.toContain(`${projectDetailIds.project}/${projectDetailIds.milestone}/private-file.pdf`);
+    expect(response.body).not.toContain("private-idempotency-key");
+    expect(supabase.selectedColumns.get("deliverables")).not.toContain("storage_object_path");
+    expect(supabase.selectedColumns.get("deliverables")).not.toContain("idempotency_key");
+    expect(supabase.selectedColumns.get("milestone_reviews")).not.toContain("idempotency_key");
+  });
+
+  it("does not disclose child evidence or review data when the requested project is hidden by RLS", async () => {
+    const supabase = projectDetailFactory({ visibleProject: false, userId: "unrelated-user" });
+    app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
+    const response = await app.inject({
+      method: "GET", url: `/api/projects/${projectDetailIds.project}`,
+      headers: { authorization: "Bearer valid-unrelated-token" },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(supabase.getUser).toHaveBeenCalledWith("valid-unrelated-token");
+    expect(response.body).not.toContain("First work summary");
+    expect(response.body).not.toContain("Please include the agreed mobile layout.");
+    expect(response.body).not.toContain("https://evidence.example.test/first");
+    expect(supabase.queriedTables).toEqual(["projects"]);
   });
 
   it("returns schema-checked AI milestone drafts with server-calculated exact allocations", async () => {

@@ -20,10 +20,12 @@ const workflow = read('.github/workflows/project-completion-postgres-validation.
 const runner = read('scripts/run-project-completion-postgres-validation.mjs');
 const concurrency = read('scripts/test-project-completion-concurrency.mjs');
 const sqlTests = read('supabase/tests/project_completion_workflow.test.sql');
+const preMigrationFixture = read('scripts/fixtures/project-completion-pre-migration.sql');
 const postMigrationFixture = read('scripts/fixtures/project-completion-post-migration.sql');
 const fixtures = `${read('scripts/fixtures/project-completion-pre-migration.sql')}\n${read('scripts/fixtures/project-completion-post-migration.sql')}`;
 const packageJson = JSON.parse(read('package.json'));
 const migration = read('supabase/migrations/202611050001_project_completion_workflow.sql');
+const agreementInvariantMigration = read('supabase/migrations/202610310003_workflow_sql_corrections.sql');
 const cliExcludeNames = [
   'gotrue', 'realtime', 'storage-api', 'imgproxy', 'kong', 'mailpit',
   'postgrest', 'postgres-meta', 'studio', 'edge-runtime', 'logflare', 'vector', 'supavisor',
@@ -266,6 +268,16 @@ test('post-migration fixture reports only allowlisted step markers on failure', 
   assert.equal(extractFixtureStep('fixture_step=password=private-value\n'), null);
   assert.match(runner, /fixtureName = 'project-completion-post-migration\.sql'/);
   assert.match(runner, /fixtureStep: processFailure\.fixtureStep/);
+});
+
+test('hourly completion fixture satisfies accepted-agreement database invariants', () => {
+  assert.match(preMigrationFixture, /p_hourly_rate_minor bigint default null/);
+  assert.match(preMigrationFixture, /p_contract_type = 'hourly'[\s\S]*?cardinality\(p_milestone_statuses\) <> 0[\s\S]*?cardinality\(p_milestone_amounts\) <> 0/);
+  assert.match(preMigrationFixture, /'hourlyRateMinor', p_hourly_rate_minor::text/);
+  assert.match(preMigrationFixture, /insert into public\.hourly_contracts[\s\S]*?p_agreement_id, 'active'/);
+  assert.match(preMigrationFixture, /if p_contract_type = 'fixed' then[\s\S]*?for milestone_index in 1\.\.cardinality\(p_milestone_amounts\) loop[\s\S]*?else[\s\S]*?insert into public\.hourly_contracts/);
+  assert.match(postMigrationFixture, /'hourly', 'in_progress', array\[\]::text\[\], array\[\]::bigint\[\], 10000/);
+  assert.match(agreementInvariantMigration, /accepted hourly agreement must have two party approvals and a matching active contract with no milestones/i);
 });
 
 test('database fixture failures expose SQLSTATE and safe object names without raw SQL details', () => {

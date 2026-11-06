@@ -30,7 +30,7 @@ select proofpay_validation.add_project(
 \echo fixture_step=project_700
 select proofpay_validation.add_project(
   '00000000-0000-4000-8000-000000000700', '00000000-0000-4000-8000-000000000710',
-  'hourly', 'in_progress', array['approved'], array[10000]::bigint[]
+  'hourly', 'in_progress', array[]::text[], array[]::bigint[], 10000
 );
 \echo fixture_step=project_800
 select proofpay_validation.add_project(

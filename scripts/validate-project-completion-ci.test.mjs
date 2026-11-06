@@ -7,6 +7,7 @@ import {
   classifyDatabaseFailure,
   evaluateInjectedSqlFailure,
   evaluateRollbackState,
+  extractFixtureStep,
   parseRollbackState,
   rollbackStateSql,
   safeProcessFailure,
@@ -19,6 +20,7 @@ const workflow = read('.github/workflows/project-completion-postgres-validation.
 const runner = read('scripts/run-project-completion-postgres-validation.mjs');
 const concurrency = read('scripts/test-project-completion-concurrency.mjs');
 const sqlTests = read('supabase/tests/project_completion_workflow.test.sql');
+const postMigrationFixture = read('scripts/fixtures/project-completion-post-migration.sql');
 const fixtures = `${read('scripts/fixtures/project-completion-pre-migration.sql')}\n${read('scripts/fixtures/project-completion-post-migration.sql')}`;
 const packageJson = JSON.parse(read('package.json'));
 const migration = read('supabase/migrations/202611050001_project_completion_workflow.sql');
@@ -71,6 +73,8 @@ test('workflow uses the repository-pinned CLI, Node version, locked install, and
   assert.match(runner, /\['db', 'reset', '--local', '--no-seed'\]/);
   assert.match(runner, /\['db', 'push', '--local'\]/);
   assert.match(runner, /\['test', 'db', '--local'\]/);
+  assert.match(runner, /'VERBOSITY=verbose'/);
+  assert.match(runner, /failureType: 'postgresql_fixture_failure'/);
   assert.doesNotMatch(runner, /--linked|--project-ref|db\s+push[^\]]*remote/i);
   assert.match(runner, /assert\.equal\(process\.env\.GITHUB_ACTIONS, 'true'/);
   assert.match(runner, /supabase_db_\$\{projectId\}/);
@@ -249,6 +253,44 @@ test('rollback output parsing and process diagnostics never echo raw sensitive t
   assert.equal(killed.exitStatus, null);
   assert.equal(killed.signal, 'SIGTERM');
   assert.equal(killed.timedOut, false);
+});
+
+test('post-migration fixture reports only allowlisted step markers on failure', () => {
+  for (const step of [
+    'begin', 'project_200', 'project_300', 'project_400', 'project_500', 'project_600',
+    'project_700', 'project_800', 'project_900', 'paid_invoice', 'scope_requests',
+    'change_order_versions', 'commit',
+  ]) assert.match(postMigrationFixture, new RegExp(`\\\\echo fixture_step=${step}`));
+
+  assert.equal(extractFixtureStep('fixture_step=project_200\nfixture_step=paid_invoice\n'), 'paid_invoice');
+  assert.equal(extractFixtureStep('fixture_step=password=private-value\n'), null);
+  assert.match(runner, /fixtureName = 'project-completion-post-migration\.sql'/);
+  assert.match(runner, /fixtureStep: processFailure\.fixtureStep/);
+});
+
+test('database fixture failures expose SQLSTATE and safe object names without raw SQL details', () => {
+  const syntheticError = [
+    'ERROR:  23514: row with synthetic private value violates check constraint "milestones_workflow_status_check"',
+    'CONSTRAINT: milestones_workflow_status_check',
+    'CONTEXT: PL/pgSQL function public.prevent_completed_project_reopen() line 4 at RAISE',
+    'STATEMENT: insert into public.milestones values (\'synthetic-private-value\')',
+  ].join('\n');
+  const diagnostic = safeProcessFailure({
+    code: 3,
+    signal: null,
+    timedOut: false,
+    stderr: syntheticError,
+    stdout: 'fixture_step=project_700\n',
+  });
+  assert.equal(diagnostic.sqlState, '23514');
+  assert.equal(diagnostic.failureCategory, 'check_violation');
+  assert.equal(diagnostic.constraint, 'milestones_workflow_status_check');
+  assert.equal(diagnostic.triggerFunction, 'public.prevent_completed_project_reopen');
+  assert.equal(diagnostic.fixtureStep, 'project_700');
+  const serialized = JSON.stringify(diagnostic);
+  assert.ok(!serialized.includes('synthetic private value'));
+  assert.ok(!serialized.includes('synthetic-private-value'));
+  assert.ok(!serialized.includes('STATEMENT'));
 });
 
 test('SQL integration suite covers guards, permissions, recheck, history, idempotency, RLS, and payment isolation', () => {

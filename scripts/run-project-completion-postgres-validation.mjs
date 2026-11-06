@@ -118,7 +118,7 @@ function failWithSafeDiagnostic(safeDetails) {
 async function psql(container, sql, { allowFailure = false } = {}) {
   return run('docker', [
     'exec', '-i', container,
-    'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', '-A', '-t',
+    'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=verbose', '-U', 'postgres', '-d', 'postgres', '-A', '-t',
   ], { cwd: repositoryRoot, env: runEnv, input: sql, timeoutMs: 30_000, allowFailure });
 }
 
@@ -346,7 +346,31 @@ from public.projects where id = '00000000-0000-4000-8000-000000000100';
   report('migration_19', 'applied_locally', { appliedCount: 19, latest: targetMigration.split('_', 1)[0], allVersionsMatchRepository: true });
 
   currentStage = 'postgresql_integration_tests';
-  await psql(container, await readFile(join(repositoryRoot, 'scripts', 'fixtures', 'project-completion-post-migration.sql'), 'utf8'));
+  const fixtureName = 'project-completion-post-migration.sql';
+  try {
+    await psql(container, await readFile(join(repositoryRoot, 'scripts', 'fixtures', fixtureName), 'utf8'));
+  } catch (error) {
+    const processFailure = error?.processResult
+      ? safeProcessFailure(error.processResult)
+      : {
+        failureType: 'database_process_start_failed',
+        exitStatus: null,
+        signal: null,
+        timedOut: false,
+        databaseCondition: 'unclassified_database_error',
+        sqlState: null,
+        failureCategory: 'process_start_failure',
+        constraint: null,
+        triggerFunction: null,
+        fixtureStep: null,
+      };
+    throw failWithSafeDiagnostic({
+      ...processFailure,
+      failureType: 'postgresql_fixture_failure',
+      fixture: fixtureName,
+      fixtureStep: processFailure.fixtureStep,
+    });
+  }
   const testRoot = join(supabaseRoot, 'supabase', 'tests');
   await mkdir(testRoot, { recursive: true });
   await copyFile(join(repositoryRoot, 'supabase', 'tests', 'project_completion_workflow.test.sql'), join(testRoot, 'project_completion_workflow.test.sql'));
@@ -380,7 +404,12 @@ try {
   await main();
 } catch (error) {
   exitCode = 1;
-  report(currentStage, 'failed', { diagnostic: safeDiagnostic(error), exitStatus: error?.processResult?.code ?? null, timedOut: Boolean(error?.processResult?.timedOut) });
+  const diagnostic = safeDiagnostic(error);
+  report(currentStage, 'failed', {
+    diagnostic,
+    exitStatus: diagnostic?.exitStatus ?? error?.processResult?.code ?? null,
+    timedOut: diagnostic?.timedOut ?? Boolean(error?.processResult?.timedOut),
+  });
 } finally {
   if (stackStartAttempted && supabaseRoot && cliPath && runEnv) {
     const stopped = await run(cliPath, ['stop', '--no-backup'], { cwd: supabaseRoot, env: runEnv, timeoutMs: 90_000, allowFailure: true }).catch(() => null);

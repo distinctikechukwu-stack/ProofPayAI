@@ -61,6 +61,21 @@ select jsonb_build_object(
 `;
 
 const knownFunctions = new Set([...migrationOnlyFunctions, ...originalFunctions]);
+const knownFixtureSteps = new Set([
+  'begin',
+  'project_200',
+  'project_300',
+  'project_400',
+  'project_500',
+  'project_600',
+  'project_700',
+  'project_800',
+  'project_900',
+  'paid_invoice',
+  'scope_requests',
+  'change_order_versions',
+  'commit',
+]);
 
 function normalizeFunctionList(value) {
   if (!Array.isArray(value)) return null;
@@ -169,17 +184,69 @@ export function evaluateRollbackState(observed) {
 export function classifyDatabaseFailure(stderr) {
   const text = String(stderr ?? '');
   if (/division by zero/i.test(text)) return 'division_by_zero';
-  const sqlState = text.match(/\bSQLSTATE\s*[:=]?\s*([0-9A-Z]{5})\b/i)?.[1];
+  const sqlState = extractSqlState(text);
   if (sqlState) return `sqlstate_${sqlState.toUpperCase()}`;
   return 'unclassified_database_error';
 }
 
+function extractSqlState(stderr) {
+  const text = String(stderr ?? '');
+  return (
+    text.match(/\bSQLSTATE\s*[:=]?\s*([0-9A-Z]{5})\b/i)?.[1]
+    ?? text.match(/(?:^|\n)\s*(?:ERROR|FATAL|PANIC):\s+([0-9A-Z]{5}):/i)?.[1]
+    ?? null
+  )?.toUpperCase() ?? null;
+}
+
+function failureCategory(sqlState) {
+  if (!sqlState) return 'unclassified_database_error';
+  if (sqlState === '23502') return 'not_null_violation';
+  if (sqlState === '23503') return 'foreign_key_violation';
+  if (sqlState === '23505') return 'unique_violation';
+  if (sqlState === '23514') return 'check_violation';
+  if (sqlState.startsWith('23')) return 'integrity_constraint_violation';
+  if (sqlState === '42501') return 'authorization_failure';
+  if (sqlState === '40001') return 'serialization_failure';
+  if (sqlState === '57014') return 'query_cancelled';
+  if (sqlState === '55000') return 'invalid_database_state';
+  if (sqlState === 'P0001') return 'trigger_or_application_exception';
+  if (sqlState.startsWith('22')) return 'data_exception';
+  if (sqlState.startsWith('42')) return 'syntax_or_access_rule_violation';
+  return 'database_error';
+}
+
+function extractConstraint(stderr) {
+  const text = String(stderr ?? '');
+  return (
+    text.match(/(?:^|\n)\s*CONSTRAINT:\s*"?([A-Za-z_][A-Za-z0-9_$]{0,127})"?\s*$/im)?.[1]
+    ?? text.match(/constraint\s+"([A-Za-z_][A-Za-z0-9_$]{0,127})"/i)?.[1]
+    ?? null
+  );
+}
+
+function extractTriggerFunction(stderr) {
+  const text = String(stderr ?? '');
+  return text.match(/PL\/pgSQL function\s+((?:public\.)?[A-Za-z_][A-Za-z0-9_$]{0,127})\s*\(/i)?.[1] ?? null;
+}
+
+export function extractFixtureStep(stdout) {
+  const matches = [...String(stdout ?? '').matchAll(/^\s*fixture_step=([a-z0-9_]+)\s*$/gim)];
+  const step = matches.at(-1)?.[1] ?? null;
+  return step && knownFixtureSteps.has(step) ? step : null;
+}
+
 export function safeProcessFailure(processResult) {
+  const sqlState = extractSqlState(processResult?.stderr);
   return {
     failureType: 'subprocess_failure',
     exitStatus: Number.isInteger(processResult?.code) ? processResult.code : null,
     signal: typeof processResult?.signal === 'string' && /^SIG[A-Z0-9]+$/.test(processResult.signal) ? processResult.signal : null,
     timedOut: processResult?.timedOut === true,
     databaseCondition: classifyDatabaseFailure(processResult?.stderr),
+    sqlState,
+    failureCategory: failureCategory(sqlState),
+    constraint: extractConstraint(processResult?.stderr),
+    triggerFunction: extractTriggerFunction(processResult?.stderr),
+    fixtureStep: extractFixtureStep(processResult?.stdout),
   };
 }

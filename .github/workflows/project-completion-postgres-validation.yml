@@ -1,0 +1,60 @@
+name: Project completion PostgreSQL validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: project-completion-postgres-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/codex/proofpay-staging-release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the selected release branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Set up the repository Node.js version
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install the locked workspace and pinned Supabase CLI
+        run: npm ci --include=dev
+
+      - name: Check disk headroom before local Supabase image pulls
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker_root="$(docker info --format '{{.DockerRootDir}}')"
+          minimum_free_kib=$((6 * 1024 * 1024))
+          for path in "$RUNNER_TEMP" "$GITHUB_WORKSPACE" "$docker_root"; do
+            free_kib="$(df -Pk "$path" | awk 'END { print $4 }')"
+            if [[ ! "$free_kib" =~ ^[0-9]+$ ]]; then
+              echo "::error::Could not determine free disk space for a required runner path."
+              exit 1
+            fi
+            free_gib="$(awk -v kib="$free_kib" 'BEGIN { printf "%.1f", kib / 1024 / 1024 }')"
+            echo "Disk preflight: ${path} has ${free_gib} GiB free."
+            if (( free_kib < minimum_free_kib )); then
+              echo "::error::At least 6 GiB free is required before pulling the isolated Supabase stack."
+              exit 1
+            fi
+          done
+
+      - name: Validate the local-only harness contract
+        run: node scripts/validate-project-completion-ci.test.mjs
+
+      - name: Recreate PostgreSQL locally and run migration 19 tests
+        run: node scripts/run-project-completion-postgres-validation.mjs

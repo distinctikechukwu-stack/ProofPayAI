@@ -1,4 +1,5 @@
 import { render, screen, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { ProjectDetailPage } from "./ProjectDetailPage";
@@ -21,17 +22,21 @@ const projectId = "117a3dce-1981-4e85-ad72-34b236ff49ba";
 const milestoneId = "1d8f102d-0716-42d2-8c8c-82d1838f8314";
 const privatePath = `${projectId}/${milestoneId}/not-for-browser.pdf`;
 
-function projectResponse(evidenceUrl: string | null = "https://evidence.example.test/work") {
+function projectResponse(
+  evidenceUrl: string | null = "https://evidence.example.test/work",
+  projectStatus = "in_progress",
+  milestoneStatus = "revision_requested",
+) {
   return {
     project: {
       id: projectId, created_by: "freelancer-user", title: "Fictional project", description: "A private project",
       client_name: "Fictional client", budget_minor: "60000", currency: "USD", contract_type: "fixed",
-      deadline: null, status: "in_progress", current_agreement_version_id: "agreement-version",
+      deadline: null, status: projectStatus, current_agreement_version_id: "agreement-version",
     },
     milestones: [{
-      id: milestoneId, sequence: 1, title: "Milestone 1", description: "Complete the first stage", deliverables: ["Responsive page"],
+      id: milestoneId, agreement_version_id: "agreement-version", sequence: 1, title: "Milestone 1", description: "Complete the first stage", deliverables: ["Responsive page"],
       acceptance_criteria: ["Reviewable on mobile"], completion_conditions: ["Client review"], amount_minor: "60000",
-      currency: "USD", due_date: null, dependency_sequences: [], workflow_status: "revision_requested",
+      currency: "USD", due_date: null, dependency_sequences: [], workflow_status: milestoneStatus,
     }],
     agreements: [{
       id: "agreement-version", version_number: 1, state: "accepted", title: "Agreement", scope_text: "Build a page.",
@@ -90,5 +95,34 @@ describe("persisted milestone evidence and review history", () => {
 
     expect(await screen.findByText(/saved evidence link is invalid or unsupported/i)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "javascript:alert(1)" })).not.toBeInTheDocument();
+  });
+
+  it("shows the guarded historical completion action and refreshes the persisted project status", async () => {
+    const user = userEvent.setup();
+    const completed = projectResponse(null, "completed", "approved");
+    let current = projectResponse(null, "in_progress", "approved");
+    mocks.apiRequest.mockImplementation(async (path: string) => {
+      if (path.endsWith("/recheck-completion")) {
+        current = completed;
+        return { completed: true, changed: true, status: "completed", reason: null };
+      }
+      return current;
+    });
+    renderProject();
+
+    const recheck = await screen.findByRole("button", { name: "Recheck project completion" });
+    await user.click(recheck);
+
+    expect(await screen.findByText("Project work is complete. No invoice or payment state was changed.")).toBeInTheDocument();
+    expect(screen.getByText("Completed", { selector: ".status-pill" })).toBeInTheDocument();
+    expect(mocks.apiRequest).toHaveBeenCalledWith(`/api/projects/${projectId}/recheck-completion`, { method: "POST" });
+  });
+
+  it("displays a persisted completed state without presenting another recheck action", async () => {
+    mocks.apiRequest.mockResolvedValue(projectResponse(null, "completed", "approved"));
+    renderProject();
+
+    expect(await screen.findByText("Completed", { selector: ".status-pill" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Recheck project completion" })).not.toBeInTheDocument();
   });
 });

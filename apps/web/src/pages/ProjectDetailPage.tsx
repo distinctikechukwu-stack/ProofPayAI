@@ -52,7 +52,7 @@ interface PersistedProjectResponse {
     current_agreement_version_id: string | null;
   };
   milestones: Array<{
-    id: string; sequence: number; title: string; description: string; deliverables: string[];
+    id: string; agreement_version_id: string; sequence: number; title: string; description: string; deliverables: string[];
     acceptance_criteria: string[]; completion_conditions: string[]; amount_minor: number | string; currency: string; due_date: string | null;
     dependency_sequences: number[]; workflow_status: string;
   }>;
@@ -313,11 +313,32 @@ function PersistedProjectDetail({ projectId, userId }: { projectId: string; user
     { decision },
   );
 
+  const recheckCompletion = async () => {
+    setBusy("recheck-completion");
+    setMessage("");
+    try {
+      const result = await apiRequest<{ completed: boolean; changed: boolean; status: string; reason: string | null }>(
+        `/api/projects/${projectId}/recheck-completion`, { method: "POST" },
+      );
+      await refresh();
+      setMessage(result.completed
+        ? result.changed
+          ? "Project work is complete. No invoice or payment state was changed."
+          : "Project work was already marked complete. No invoice or payment state was changed."
+        : completionBlockerMessage(result.reason));
+    } catch (cause) {
+      setMessage(cause instanceof ApiError ? cause.message : "Project completion could not be rechecked.");
+    } finally {
+      setBusy("");
+    }
+  };
+
   if (error && !record) return <section className="empty-filter" role="alert"><strong>Project unavailable</strong><p>{error}</p><button type="button" className="button-secondary" onClick={() => void refresh()}>Try again</button></section>;
   if (!record) return <section className="empty-filter" aria-live="polite"><strong>Loading project…</strong></section>;
 
   const { project, milestones, agreements } = record;
   const currentAgreement = agreements.find((agreement) => agreement.id === project.current_agreement_version_id) ?? agreements[0];
+  const currentAgreementMilestones = milestones.filter((milestone) => milestone.agreement_version_id === project.current_agreement_version_id);
   const creator = project.created_by === userId;
   const total = milestones.reduce((sum, item) => sum + BigInt(item.amount_minor), 0n);
   const draftCanEdit = creator && project.status === "draft" && currentAgreement?.state === "draft";
@@ -332,9 +353,14 @@ function PersistedProjectDetail({ projectId, userId }: { projectId: string; user
   const acceptanceReady = project.contract_type === "hourly" ? hourlyAgreementReady : !requiresMilestoneReview && milestones.length > 0 && total === BigInt(project.budget_minor)
     && milestones.every((milestone) => milestone.workflow_status === "draft"
       && milestone.deliverables.length > 0 && milestone.acceptance_criteria.length > 0 && milestone.completion_conditions.length > 0);
+  const canRecheckCompletion = project.contract_type === "fixed"
+    && ["agreed", "in_progress"].includes(project.status)
+    && currentAgreement?.state === "accepted"
+    && currentAgreementMilestones.length > 0
+    && currentAgreementMilestones.every((milestone) => milestone.workflow_status === "approved");
   return <>
     <div className="back-link-row"><Link to="/app/projects"><ArrowLeft size={14} /> All projects</Link><span><ChevronRight size={13} /> {project.title}</span></div>
-    <PageHeading eyebrow="PERSISTED PROJECT" title={project.title} description={`${project.client_name} · ${project.deadline ? `Due ${project.deadline}` : "No deadline set"}`} action={<span className="status-pill status-progress">{titleCase(project.status)}</span>} />
+    <PageHeading eyebrow="PERSISTED PROJECT" title={project.title} description={`${project.client_name} · ${project.deadline ? `Due ${project.deadline}` : "No deadline set"}`} action={<StatusPill status={titleCase(project.status)} />} />
     <DemoNotice>This project is loaded from Supabase using your signed-in session and project RLS. AI analysis, file uploads, and PayPal payments remain separate integrations.</DemoNotice>
     {message && <p role="status" className="auth-message">{message}</p>}
     {error && <p role="alert" className="auth-message">{error}</p>}
@@ -390,6 +416,13 @@ function PersistedProjectDetail({ projectId, userId }: { projectId: string; user
             <div className="draft-milestone-editor-footer"><button type="button" className="button-secondary" disabled={draftPlan.length >= 20 || Boolean(busy)} onClick={addDraftMilestone}><Plus size={14} /> Add milestone</button><button type="submit" className="button-primary" disabled={Boolean(busy)}>{busy === "save-draft-milestones" ? "Saving draft…" : "Save draft milestones"}</button></div>
           </form>}
           <div className="milestone-total"><span>Project budget</span><strong>{formatMinor(project.budget_minor, project.currency)}</strong></div>
+        </section>}
+        {canRecheckCompletion && <section className="surface-card project-messaging-card">
+          <SectionHeading title="All current milestones are approved" subtitle="Recheck older project records against the accepted agreement and any scope changes." />
+          <p className="agreement-summary">This action updates project work status only. It does not create invoices, change payment records, or mark anything paid.</p>
+          <button type="button" className="button-primary" disabled={Boolean(busy)} onClick={() => void recheckCompletion()}>
+            {busy === "recheck-completion" ? "Checking completion…" : "Recheck project completion"}
+          </button>
         </section>}
         <ScopeRequest
           onSubmit={submitScopeRequest}
@@ -555,6 +588,24 @@ function ScopeRequest({
 
 function titleCase(value: string): string {
   return value.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function completionBlockerMessage(reason: string | null): string {
+  const messages: Record<string, string> = {
+    project_not_active: "Project completion is available only for an active project.",
+    not_fixed_price: "The fixed-price milestone completion rule does not apply to hourly projects.",
+    current_agreement_missing: "An accepted current agreement is required before project completion.",
+    agreement_not_accepted: "Both parties must accept the current agreement before completion.",
+    newer_agreement_exists: "A newer agreement version must be resolved before completion.",
+    both_parties_must_accept: "Both named project participants must have accepted the current agreement.",
+    no_current_agreement_milestones: "The current accepted agreement must contain at least one milestone.",
+    milestones_not_all_approved: "Every milestone in the current accepted agreement must be approved first.",
+    agreement_milestone_totals_mismatch: "The current agreement and milestone totals do not reconcile safely.",
+    scope_workflow_unresolved: "Resolve or withdraw open scope requests before completing the project.",
+    amendment_unresolved_or_unrepresented: "Resolve pending amendments. Accepted added work must be represented by completion criteria first.",
+    unauthorized: "Only a project participant may recheck completion.",
+  };
+  return messages[reason ?? ""] ?? "Project completion requirements are not met. Review the agreement, milestones, and scope workflow.";
 }
 
 function formatMinor(value: string | number, currency: string): string {

@@ -11,12 +11,12 @@ export function DemoNotice({ children }: { children: ReactNode }) {
 
 export function StatusPill({ status }: { status: string }) {
   const normalized = status.toLowerCase();
-  const tone = ["approved", "paid"].includes(normalized) ? "success"
+  const tone = ["approved", "completed", "paid"].includes(normalized) ? "success"
     : ["ready to invoice"].includes(normalized) ? "accent"
       : ["not started", "draft", "sandbox preview"].includes(normalized) ? "neutral"
         : ["not connected", "not configured", "unknown", "partially paid", "payment pending"].includes(normalized) ? "warning"
           : "progress";
-  const Icon = ["approved", "paid"].includes(normalized) ? Check : ["ready to invoice", "awaiting review"].includes(normalized) ? Clock3 : null;
+  const Icon = ["approved", "completed", "paid"].includes(normalized) ? Check : ["ready to invoice", "awaiting review"].includes(normalized) ? Clock3 : null;
   return <span className={`status-pill status-${tone}`}>{Icon && <Icon size={12} />}{status}</span>;
 }
 

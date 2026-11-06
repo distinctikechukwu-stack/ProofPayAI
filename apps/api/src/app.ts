@@ -1859,6 +1859,17 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     return reply.code(202).send({ verified: true, accepted: true, duplicate: receipt.data.duplicate });
   });
 
+  app.post<{ Params: { projectId: string } }>("/api/projects/:projectId/recheck-completion", async (request, reply) => {
+    const context = await authenticateRequest(request, reply, options);
+    if (!context) return;
+    if (!isUuid(request.params.projectId)) return reply.code(400).send({ error: "Project ID must be a UUID." });
+    const { data, error } = await context.client.rpc("recheck_project_completion", {
+      p_project_id: request.params.projectId,
+    });
+    if (error) return rpcFailure(reply, error);
+    return data;
+  });
+
   app.get<{ Params: { projectId: string } }>("/api/projects/:projectId", async (request, reply) => {
     const context = await authenticateRequest(request, reply, options);
     if (!context) return;
@@ -1870,7 +1881,7 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (!projectResult.data) return reply.code(404).send({ error: "The requested project was not found." });
 
     const [milestoneResult, agreementResult, scopeRequestResult, aiAnalysisResult, changeOrderResult, deliverableResult, reviewResult] = await Promise.all([
-      context.client.from("milestones").select("id,sequence,title,description,deliverables,acceptance_criteria,completion_conditions,amount_minor,currency,due_date,dependency_sequences,workflow_status")
+      context.client.from("milestones").select("id,agreement_version_id,sequence,title,description,deliverables,acceptance_criteria,completion_conditions,amount_minor,currency,due_date,dependency_sequences,workflow_status")
         .eq("project_id", projectId).order("sequence", { ascending: true }),
       context.client.from("agreement_versions").select("id,version_number,state,title,scope_text,terms,total_minor,currency,created_at")
         .eq("project_id", projectId).order("version_number", { ascending: false }),

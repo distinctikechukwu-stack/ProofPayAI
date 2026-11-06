@@ -286,6 +286,54 @@ describe("authenticated project API", () => {
     expect(supabase.rpc).toHaveBeenCalledWith("accept_agreement_version", { p_agreement_version_id: agreementVersionId });
   });
 
+  it("routes an authenticated participant completion recheck through the caller-scoped RPC", async () => {
+    const projectId = "117a3dce-1981-4e85-ad72-34b236ff49ba";
+    const result = { completed: true, changed: false, status: "completed", reason: "already_completed" };
+    const supabase = factory({ rpcData: result });
+    app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
+
+    const response = await app.inject({
+      method: "POST", url: `/api/projects/${projectId}/recheck-completion`,
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(result);
+    expect(supabase.getUser).toHaveBeenCalledWith("valid-token");
+    expect(supabase.rpc).toHaveBeenCalledWith("recheck_project_completion", { p_project_id: projectId });
+  });
+
+  it("does not call completion recheck without authentication or with an invalid project id", async () => {
+    const supabase = factory();
+    app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
+
+    const signedOut = await app.inject({ method: "POST", url: "/api/projects/not-a-uuid/recheck-completion" });
+    const invalidId = await app.inject({
+      method: "POST", url: "/api/projects/not-a-uuid/recheck-completion",
+      headers: { authorization: "Bearer valid-token" },
+    });
+
+    expect(signedOut.statusCode).toBe(401);
+    expect(invalidId.statusCode).toBe(400);
+    expect(supabase.rpc).not.toHaveBeenCalled();
+  });
+
+  it("keeps unrelated participant denial generic for completion rechecks", async () => {
+    const projectId = "117a3dce-1981-4e85-ad72-34b236ff49ba";
+    const supabase = factory({ rpcError: { code: "42501", message: "private project membership detail" } });
+    app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });
+
+    const response = await app.inject({
+      method: "POST", url: `/api/projects/${projectId}/recheck-completion`,
+      headers: { authorization: "Bearer valid-unrelated-token" },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error).toBe("You do not have access to perform this action.");
+    expect(response.body).not.toContain("private project membership detail");
+    expect(supabase.rpc).toHaveBeenCalledWith("recheck_project_completion", { p_project_id: projectId });
+  });
+
   it("aggregates only the authenticated user's persisted analytics with exact paid totals", async () => {
     const supabase = analyticsFactory();
     app = await buildApp({ logger: false, supabaseUrl: "https://example.supabase.co", supabaseAnonKey: "public-anon", createSupabaseClient: supabase.create });

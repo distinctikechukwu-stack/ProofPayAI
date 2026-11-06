@@ -3,6 +3,14 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import {
+  classifyDatabaseFailure,
+  evaluateInjectedSqlFailure,
+  evaluateRollbackState,
+  parseRollbackState,
+  rollbackStateSql,
+  safeProcessFailure,
+} from './project-completion-rollback-checks.mjs';
 import { sanitizeCiDiagnostic } from './sanitize-ci-diagnostic.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -22,6 +30,7 @@ const preparedPaths = [
   '.github/workflows/project-completion-postgres-validation.yml',
   'scripts/fixtures/project-completion-pre-migration.sql',
   'scripts/fixtures/project-completion-post-migration.sql',
+  'scripts/project-completion-rollback-checks.mjs',
   'scripts/run-project-completion-postgres-validation.mjs',
   'scripts/sanitize-ci-diagnostic.mjs',
   'scripts/test-project-completion-concurrency.mjs',
@@ -89,14 +98,157 @@ test('temporary database workspace is synthetic, unlinked, seed-free, and creden
   assert.doesNotMatch(fixtures, /@proofpay\.invalid|[a-z0-9]{20}|SUPABASE_SERVICE_ROLE_KEY/i);
 });
 
-test('rollback probe fails before applying migration 19, then asserts migration 1-18 data and schema are unchanged', () => {
+test('rollback probe reports injected SQL exit and every post-rollback invariant separately', () => {
   assert.match(runner, /slice\(0, -1\)/);
   assert.match(runner, /select 1 \/ 0/);
-  assert.match(runner, /18\|in_progress\|t\|t/);
+  assert.match(runner, /const injectedSqlCheck = evaluateInjectedSqlFailure/);
+  assert.match(runner, /const rollbackStateCheck = evaluateRollbackState/);
+  assert.match(runner, /migrationHistoryStill18/);
+  assert.match(runner, /originalProjectStatusUnchanged/);
+  assert.match(runner, /newFunctionsFullyRolledBack/);
+  assert.doesNotMatch(runner, /assert\.notEqual\(rollbackAttempt\.code/);
+  assert.match(rollbackStateSql, /migrationHistoryCount/);
+  assert.match(rollbackStateSql, /migrationHistoryLatestVersion/);
+  assert.match(rollbackStateSql, /migrationOnlyFunctionsRemaining/);
+  assert.match(rollbackStateSql, /originalFunctionsMissing/);
+  assert.match(rollbackStateSql, /projects_prevent_completed_reopen/);
   assert.match(runner, /migrationHistoryStill18: true/);
   assert.match(runner, /allVersionsMatchRepository: true/);
   assert.match(migration, /^begin;/i);
   assert.match(migration, /commit;\s*$/i);
+});
+
+test('rollback diagnostics identify an injected SQL command that unexpectedly exits zero', () => {
+  assert.deepEqual(evaluateInjectedSqlFailure({
+    prepared: true, processStarted: true, exitStatus: 0, timedOut: false, databaseCondition: 'division_by_zero',
+  }), {
+    passed: false,
+    check: 'injected_sql_exit_status',
+    expected: { exitStatus: 'non-zero' },
+    observed: {
+      prepared: true,
+      processStarted: true,
+      exitStatus: 0,
+      signal: null,
+      timedOut: false,
+      databaseCondition: 'division_by_zero',
+    },
+  });
+});
+
+test('rollback diagnostics distinguish unstarted and timed out injected SQL', () => {
+  const notStarted = evaluateInjectedSqlFailure({
+    prepared: true, processStarted: false, exitStatus: null, timedOut: false,
+  });
+  assert.equal(notStarted.check, 'injected_sql_process_started');
+  assert.equal(notStarted.observed.processStarted, false);
+
+  const timedOut = evaluateInjectedSqlFailure({
+    prepared: true, processStarted: true, exitStatus: null, timedOut: true,
+  });
+  assert.equal(timedOut.check, 'injected_sql_completed');
+  assert.equal(timedOut.observed.timedOut, true);
+});
+
+test('rollback probe rejects unrelated SQL errors even when psql exits non-zero', () => {
+  const result = evaluateInjectedSqlFailure({
+    prepared: true,
+    processStarted: true,
+    exitStatus: 3,
+    timedOut: false,
+    databaseCondition: classifyDatabaseFailure('ERROR: permission denied'),
+  });
+  assert.equal(result.passed, false);
+  assert.equal(result.check, 'injected_sql_failure_condition');
+  assert.equal(result.observed.exitStatus, 3);
+  assert.equal(result.observed.databaseCondition, 'unclassified_database_error');
+});
+
+test('rollback probe accepts only the intended division-by-zero failure', () => {
+  const result = evaluateInjectedSqlFailure({
+    prepared: true,
+    processStarted: true,
+    exitStatus: 3,
+    timedOut: false,
+    databaseCondition: classifyDatabaseFailure('ERROR: division by zero'),
+  });
+  assert.equal(result.passed, true);
+  assert.equal(result.observed.databaseCondition, 'division_by_zero');
+});
+
+test('rollback probe accepts the specific PostgreSQL division-by-zero SQLSTATE', () => {
+  const result = evaluateInjectedSqlFailure({
+    prepared: true,
+    processStarted: true,
+    exitStatus: 3,
+    timedOut: false,
+    databaseCondition: classifyDatabaseFailure('SQLSTATE 22012'),
+  });
+  assert.equal(result.passed, true);
+  assert.equal(result.observed.databaseCondition, 'sqlstate_22012');
+});
+
+test('rollback diagnostics show expected and observed migration, fixture, function, and trigger state', () => {
+  const observed = {
+    migrationHistoryCount: 19,
+    migrationHistoryLatestVersion: '202611050001',
+    fixtureProjectRowCount: 1,
+    projectStatus: 'in_progress',
+    migrationOnlyFunctionsRemaining: ['public.try_complete_fixed_price_project(uuid,text)'],
+    originalFunctionsMissing: [],
+    completionTriggerPresent: true,
+  };
+  const result = evaluateRollbackState(observed);
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.failedChecks, [
+    'migrationHistoryCount',
+    'migrationHistoryLatestVersion',
+    'migrationOnlyFunctionsRemaining',
+    'completionTriggerPresent',
+  ]);
+  assert.equal(result.expected.migrationHistoryCount, 18);
+  assert.equal(result.observed.migrationHistoryCount, 19);
+  assert.deepEqual(result.observed.migrationOnlyFunctionsRemaining, ['public.try_complete_fixed_price_project(uuid,text)']);
+});
+
+test('a successful rollback requires history and data unchanged and all migration-only functions removed', () => {
+  const parsed = parseRollbackState(JSON.stringify({
+    migrationHistoryCount: 18,
+    migrationHistoryLatestVersion: '202611020004',
+    fixtureProjectRowCount: 1,
+    projectStatus: 'in_progress',
+    migrationOnlyFunctionsRemaining: [],
+    originalFunctionsMissing: [],
+    completionTriggerPresent: false,
+  }));
+  assert.equal(parsed.ok, true);
+  assert.equal(evaluateRollbackState(parsed.observed).passed, true);
+});
+
+test('rollback output parsing and process diagnostics never echo raw sensitive text', () => {
+  const rawDiagnostic = 'SUPABASE_SERVICE_ROLE_KEY=synthetic-secret';
+  const malformed = parseRollbackState(rawDiagnostic);
+  assert.deepEqual(malformed, { ok: false, observed: { stateQueryOutputParsed: false, outputLength: rawDiagnostic.length } });
+  assert.ok(!JSON.stringify(malformed).includes('synthetic-secret'));
+
+  const diagnostic = safeProcessFailure({
+    code: 3,
+    signal: null,
+    timedOut: false,
+    stderr: 'ERROR: password=synthetic-password postgresql://postgres:secret@localhost/db eyJabc123456789012345678901234567890.token.sig',
+  });
+  const output = JSON.stringify(diagnostic);
+  assert.equal(diagnostic.exitStatus, 3);
+  assert.equal(diagnostic.signal, null);
+  assert.ok(!output.includes('synthetic-password'));
+  assert.ok(!output.includes('secret@localhost'));
+  assert.ok(!output.includes('eyJabc123'));
+  assert.equal(diagnostic.databaseCondition, 'unclassified_database_error');
+
+  const killed = safeProcessFailure({ code: null, signal: 'SIGTERM', timedOut: false, stderr: '' });
+  assert.equal(killed.exitStatus, null);
+  assert.equal(killed.signal, 'SIGTERM');
+  assert.equal(killed.timedOut, false);
 });
 
 test('SQL integration suite covers guards, permissions, recheck, history, idempotency, RLS, and payment isolation', () => {

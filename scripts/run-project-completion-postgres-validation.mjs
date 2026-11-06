@@ -5,7 +5,14 @@ import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } fr
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sanitizeCiDiagnostic } from './sanitize-ci-diagnostic.mjs';
+import {
+  classifyDatabaseFailure,
+  evaluateInjectedSqlFailure,
+  evaluateRollbackState,
+  parseRollbackState,
+  rollbackStateSql,
+  safeProcessFailure,
+} from './project-completion-rollback-checks.mjs';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const targetMigration = '202611050001_project_completion_workflow.sql';
@@ -86,12 +93,26 @@ function run(command, args, { cwd, env, input, timeoutMs = 120_000, allowFailure
 }
 
 function safeDiagnostic(error) {
-  const source = error?.processResult?.stderr ?? error?.processResult?.stdout ?? error?.message ?? 'unknown error';
-  const lines = source.split(/\r?\n/)
-    .map(sanitizeCiDiagnostic)
-    .filter((line) => /error|failed|timeout|timed out|could not|not found|unsupported|denied|division by zero/i.test(line))
-    .slice(-4);
-  return lines.join(' ').replace(/\s+/g, ' ').slice(0, 600) || 'no safe diagnostic text was available';
+  if (error?.safeDiagnostic && typeof error.safeDiagnostic === 'object') return error.safeDiagnostic;
+  if (error?.processResult) return safeProcessFailure(error.processResult);
+  if (error?.code === 'ERR_ASSERTION') {
+    return {
+      failureType: 'javascript_assertion',
+      check: 'unstructured_assertion',
+      expected: 'validation assertion passed',
+      observed: 'assertion failed without structured check details',
+    };
+  }
+  return {
+    failureType: 'harness_error',
+    errorCode: typeof error?.code === 'string' && /^[A-Z0-9_]{1,40}$/.test(error.code) ? error.code : null,
+  };
+}
+
+function failWithSafeDiagnostic(safeDetails) {
+  const error = new Error('project completion validation check failed');
+  error.safeDiagnostic = safeDetails;
+  return error;
 }
 
 async function psql(container, sql, { allowFailure = false } = {}) {
@@ -210,18 +231,111 @@ from public.projects where id = '00000000-0000-4000-8000-000000000100';
   currentStage = 'transaction_rollback_probe';
   const migrationSql = await readFile(join(migrationsRoot, targetMigration), 'utf8');
   const failureInjection = migrationSql.replace(/\r?\ncommit;\s*$/i, '\nselect 1 / 0;\ncommit;\n');
-  assert.notEqual(failureInjection, migrationSql, 'could not prepare the transaction rollback probe');
-  const rollbackAttempt = await psql(container, failureInjection, { allowFailure: true });
-  assert.notEqual(rollbackAttempt.code, 0, 'the deliberate in-transaction failure unexpectedly succeeded');
-  const rollbackState = await psql(container, `
-select
-  (select count(*) from supabase_migrations.schema_migrations) || '|' ||
-  (select status from public.projects where id = '00000000-0000-4000-8000-000000000100') || '|' ||
-  (to_regprocedure('public.try_complete_fixed_price_project(uuid,text)') is null) || '|' ||
-  (to_regprocedure('public.review_milestone_unlocked(uuid,text,text,uuid)') is null);
-`);
-  assert.equal(rollbackState.stdout.trim(), '18|in_progress|t|t', 'the failing transaction left migration DDL or data changes behind');
-  report('transaction_rollback_probe', 'passed', { deliberateFailureWasRolledBack: true, migrationHistoryStill18: true, existingProjectUnchanged: true });
+  const injectionPrepared = failureInjection !== migrationSql;
+  if (!injectionPrepared) {
+    throw failWithSafeDiagnostic({
+      failureType: 'rollback_probe_preparation_failed',
+      check: 'failure_injection_prepared',
+      expected: { prepared: true },
+      observed: { prepared: false },
+    });
+  }
+
+  let rollbackAttempt;
+  let rollbackProcessStarted = true;
+  try {
+    rollbackAttempt = await psql(container, failureInjection, { allowFailure: true });
+  } catch {
+    rollbackProcessStarted = false;
+    rollbackAttempt = { code: null, signal: null, timedOut: false, stdout: '', stderr: '' };
+  }
+  const injectedSqlCheck = evaluateInjectedSqlFailure({
+    prepared: injectionPrepared,
+    processStarted: rollbackProcessStarted,
+    exitStatus: rollbackAttempt.code,
+    signal: rollbackAttempt.signal,
+    timedOut: rollbackAttempt.timedOut,
+    databaseCondition: classifyDatabaseFailure(rollbackAttempt.stderr),
+  });
+
+  // Always inspect the disposable database after the attempt, even if psql
+  // returned zero. This separates an ignored SQL error from a rollback-state
+  // mismatch and verifies whether any migration-19 effects escaped.
+  let rollbackStateResult;
+  try {
+    rollbackStateResult = await psql(container, rollbackStateSql);
+  } catch (error) {
+    const processFailure = error?.processResult
+      ? safeProcessFailure(error.processResult)
+      : { failureType: 'database_process_start_failed', processStarted: false };
+    throw failWithSafeDiagnostic({
+      failureType: 'rollback_state_query_failed',
+      check: 'rollback_state_query',
+      expected: { querySucceeded: true },
+      observed: processFailure,
+      injectedSql: injectedSqlCheck,
+    });
+  }
+
+  const parsedRollbackState = parseRollbackState(rollbackStateResult.stdout);
+  if (!parsedRollbackState.ok) {
+    throw failWithSafeDiagnostic({
+      failureType: 'rollback_state_output_invalid',
+      check: 'rollback_state_output',
+      expected: { stateQueryOutputParsed: true, stateValuesValid: true },
+      observed: parsedRollbackState.observed,
+      injectedSql: injectedSqlCheck,
+    });
+  }
+
+  const rollbackStateCheck = evaluateRollbackState(parsedRollbackState.observed);
+  if (!injectedSqlCheck.passed || !rollbackStateCheck.passed) {
+    throw failWithSafeDiagnostic({
+      failureType: 'rollback_probe_validation_failed',
+      failedChecks: [
+        ...(!injectedSqlCheck.passed ? [injectedSqlCheck.check] : []),
+        ...rollbackStateCheck.failedChecks,
+      ],
+      expected: {
+        injectedSqlExitStatus: 'non-zero',
+        migrationHistoryCount: rollbackStateCheck.expected.migrationHistoryCount,
+        migrationHistoryLatestVersion: rollbackStateCheck.expected.migrationHistoryLatestVersion,
+        fixtureProjectRowCount: rollbackStateCheck.expected.fixtureProjectRowCount,
+        projectStatus: rollbackStateCheck.expected.projectStatus,
+        migrationOnlyFunctionsRemaining: rollbackStateCheck.expected.migrationOnlyFunctionsRemaining,
+        originalFunctionsMissing: rollbackStateCheck.expected.originalFunctionsMissing,
+        completionTriggerPresent: rollbackStateCheck.expected.completionTriggerPresent,
+      },
+      observed: {
+        injectedSqlFailedAsIntended: injectedSqlCheck.passed,
+        injectedSqlExitStatus: injectedSqlCheck.observed.exitStatus,
+        injectedSqlSignal: injectedSqlCheck.observed.signal,
+        injectedSqlTimedOut: injectedSqlCheck.observed.timedOut,
+        injectedSqlDatabaseCondition: injectedSqlCheck.observed.databaseCondition,
+        ...rollbackStateCheck.observed,
+        migrationHistoryStill18: rollbackStateCheck.observed.migrationHistoryCount === 18,
+        originalProjectStatusUnchanged: rollbackStateCheck.observed.projectStatus === 'in_progress',
+        newFunctionsFullyRolledBack: rollbackStateCheck.observed.migrationOnlyFunctionsRemaining.length === 0
+          && rollbackStateCheck.observed.originalFunctionsMissing.length === 0
+          && rollbackStateCheck.observed.completionTriggerPresent === false,
+      },
+    });
+  }
+
+  report('transaction_rollback_probe', 'passed', {
+    injectedSqlFailedAsIntended: true,
+    injectedSqlExitStatus: rollbackAttempt.code,
+    injectedSqlSignal: injectedSqlCheck.observed.signal,
+    injectedSqlTimedOut: rollbackAttempt.timedOut,
+    injectedSqlDatabaseCondition: injectedSqlCheck.observed.databaseCondition,
+    expected: rollbackStateCheck.expected,
+    observed: {
+      ...rollbackStateCheck.observed,
+      migrationHistoryStill18: true,
+      originalProjectStatusUnchanged: true,
+      newFunctionsFullyRolledBack: true,
+    },
+  });
 
   currentStage = 'migration_19';
   await copyFile(join(migrationsRoot, targetMigration), join(localMigrations, targetMigration));

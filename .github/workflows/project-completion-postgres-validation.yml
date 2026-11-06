@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   validate:
-    if: github.ref == 'refs/heads/codex/proofpay-staging-release'
+    if: github.ref == 'refs/heads/codex/proofpay-staging-release' || github.ref == 'refs/heads/codex/proofpay-ci-validation'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

@@ -88,6 +88,7 @@ export interface AppOptions {
   generateAi?: StructuredAiGenerator;
   paypal?: PaypalConfig;
   paypalWebhookEnqueueTimeoutMs?: number;
+  onPaypalWebhookPending?: () => void | Promise<void>;
 }
 
 type RequestContext = { client: SupabasePort; userId: string };
@@ -1856,6 +1857,13 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     }
     const receipt = paypalWebhookEnqueueReceiptSchema.safeParse(queued.data);
     if (!receipt.success) return reply.code(503).send({ error: "The verified PayPal event storage result could not be confirmed. PayPal may retry delivery." });
+    if (receipt.data.pending && options.onPaypalWebhookPending) {
+      void Promise.resolve()
+        .then(() => options.onPaypalWebhookPending?.())
+        .catch(() => {
+          request.log.warn({ requestId: request.id, stage: "webhook_worker_wake", errorCode: "wake_failed" }, "The verified event was durably accepted; background processing will recover from the queue");
+        });
+    }
     return reply.code(202).send({ verified: true, accepted: true, duplicate: receipt.data.duplicate });
   });
 

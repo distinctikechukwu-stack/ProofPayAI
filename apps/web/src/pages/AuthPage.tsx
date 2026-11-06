@@ -62,21 +62,76 @@ export function AuthPage({ mode }: { mode: "signin" | "signup" }) {
 
 export function RecoveryPage() {
   const [submitted, setSubmitted] = useState(false);
-  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
   const { configured, passwordRecovery, sendRecovery, updatePassword } = useAuth();
+
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!configured) return;
+    if (!configured || busy) return;
+
     const values = new FormData(event.currentTarget);
-    if (passwordRecovery) {
-      const result = await updatePassword(String(values.get("password") ?? ""));
-      if (result.error) setMessage(result.error);
-      else { setSubmitted(true); setMessage("Your password was updated."); }
-    } else {
-      const result = await sendRecovery(String(values.get("email") ?? ""));
-      if (result.error) setMessage(result.error);
-      else { setSubmitted(true); setMessage("If the address is registered, a secure recovery link will arrive shortly."); }
+    setBusy(true);
+    setMessage('');
+    try {
+      if (passwordRecovery) {
+        const result = await updatePassword(String(values.get('password') ?? ''));
+        if (result.error) setMessage(result.error);
+        else {
+          setSubmitted(true);
+          setMessage('Your password was updated.');
+        }
+      } else {
+        const result = await sendRecovery(String(values.get('email') ?? ''));
+        if (result.error) setMessage(result.error);
+        else {
+          setSubmitted(true);
+          setMessage('If the address is registered, a secure recovery link will arrive shortly.');
+        }
+      }
+    } catch {
+      setMessage('Account recovery is temporarily unavailable. Try again shortly.');
+    } finally {
+      setBusy(false);
     }
   };
-  return <main className="recovery-page"><Link to="/" className="auth-logo"><Brand /></Link><section className="recovery-card"><span className="recovery-icon"><LockKeyhole size={20} /></span><span className="eyebrow">{configured ? "ACCOUNT RECOVERY" : "ACCOUNT RECOVERY PREVIEW"}</span><h1>{passwordRecovery ? "Choose a new password." : "Reset your password."}</h1><p>{configured ? passwordRecovery ? "Set a new password for your ProofPay AI account." : "We’ll send a secure recovery link if the address can receive one." : "Supabase Auth is not configured, so no recovery email can be sent."}</p>{submitted ? <div className="auth-preview-note"><strong>{configured ? "Request received" : "Not connected"}</strong><span>{message}</span></div> : <form className="auth-form" onSubmit={onSubmit}>{passwordRecovery ? <label>New password<input name="password" type="password" autoComplete="new-password" minLength={8} required disabled={!configured} /></label> : <label>Email address<input name="email" type="email" autoComplete="email" placeholder="you@example.com" required disabled={!configured} /></label>}{configured ? <button className="button-primary auth-submit" type="submit">{passwordRecovery ? "Update password" : "Send recovery link"} <ArrowRight size={16} /></button> : <Link to="/app" className="button-secondary auth-sample-button">Continue to sample workspace</Link>}{message && <p role="status" className="auth-message">{message}</p>}</form>}<Link to="/signin" className="auth-back recovery-back"><ArrowLeft size={15} /> Back to sign in</Link></section></main>;
+
+  return (
+    <main className="recovery-page">
+      <Link to="/" className="auth-logo"><Brand /></Link>
+      <section className="recovery-card">
+        <span className="recovery-icon"><LockKeyhole size={20} /></span>
+        <span className="eyebrow">{configured ? 'ACCOUNT RECOVERY' : 'ACCOUNT RECOVERY PREVIEW'}</span>
+        <h1>{passwordRecovery ? 'Choose a new password.' : 'Reset your password.'}</h1>
+        <p>{configured
+          ? passwordRecovery
+            ? 'Set a new password for your ProofPay AI account.'
+            : 'We’ll send a secure recovery link if the address can receive one.'
+          : 'Supabase Auth is not configured, so no recovery email can be sent.'}</p>
+        {submitted ? (
+          <div className="auth-preview-note">
+            <strong>{configured ? 'Request received' : 'Not connected'}</strong>
+            <span>{message}</span>
+          </div>
+        ) : (
+          <form className="auth-form" onSubmit={onSubmit}>
+            {passwordRecovery ? (
+              <label>New password<input name="password" type="password" autoComplete="new-password" minLength={8} required disabled={!configured || busy} /></label>
+            ) : (
+              <label>Email address<input name="email" type="email" autoComplete="email" placeholder="you@example.com" required disabled={!configured || busy} /></label>
+            )}
+            {configured ? (
+              <button className="button-primary auth-submit" type="submit" disabled={busy}>
+                {busy ? 'Please wait…' : passwordRecovery ? 'Update password' : 'Send recovery link'} <ArrowRight size={16} />
+              </button>
+            ) : (
+              <Link to="/app" className="button-secondary auth-sample-button">Continue to sample workspace</Link>
+            )}
+            {message && <p role="status" className="auth-message">{message}</p>}
+          </form>
+        )}
+        <Link to="/signin" className="auth-back recovery-back"><ArrowLeft size={15} /> Back to sign in</Link>
+      </section>
+    </main>
+  );
 }

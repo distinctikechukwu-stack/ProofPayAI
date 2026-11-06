@@ -21,6 +21,10 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+export function safeAuthError(error: unknown): string | null {
+  return error ? "We could not complete that account request. Check the details and try again shortly." : null;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [client, setClient] = useState<SupabaseClient | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -71,7 +75,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async signIn(email, password) {
       if (!client) return { error: configured ? "Supabase Auth is still initializing." : "Supabase Auth is not configured." };
       const { error } = await client.auth.signInWithPassword({ email, password });
-      return { error: error?.message ?? null };
+      return { error: safeAuthError(error) };
     },
     async signUp(name, email, password) {
       if (!client) return { error: configured ? "Supabase Auth is still initializing." : "Supabase Auth is not configured.", needsEmailVerification: false };
@@ -83,23 +87,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           emailRedirectTo: `${window.location.origin}/app`,
         },
       });
-      return { error: error?.message ?? null, needsEmailVerification: !error && !data.session };
+      return { error: error ? "We could not complete that account request. Check the details and try again shortly." : null, needsEmailVerification: !error && !data.session };
     },
     async signOut() {
       if (!client) return { error: null };
       const { error } = await client.auth.signOut();
-      return { error: error?.message ?? null };
+      return { error: safeAuthError(error) };
     },
     async sendRecovery(email) {
       if (!client) return { error: configured ? "Supabase Auth is still initializing." : "Supabase Auth is not configured." };
       const { error } = await client.auth.resetPasswordForEmail(email, { redirectTo: `${window.location.origin}/recover` });
-      return { error: error?.message ?? null };
+      return { error: safeAuthError(error) };
     },
     async updatePassword(password) {
       if (!client) return { error: configured ? "Supabase Auth is still initializing." : "Supabase Auth is not configured." };
       const { error } = await client.auth.updateUser({ password });
       if (!error) setPasswordRecovery(false);
-      return { error: error?.message ?? null };
+      return { error: safeAuthError(error) };
     },
   }), [client, loading, passwordRecovery, session]);
 

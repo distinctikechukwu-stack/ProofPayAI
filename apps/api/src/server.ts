@@ -1,8 +1,9 @@
 import { buildApp } from "./app.js";
-import { createPaypalWebhookWorkerFromEnvironment } from "./paypal-webhook-worker.js";
+import { createPaypalWebhookWorkerFromEnvironment, type PaypalWebhookWorker } from "./paypal-webhook-worker.js";
 
-const app = await buildApp();
-const webhookWorker = createPaypalWebhookWorkerFromEnvironment({
+let webhookWorker: PaypalWebhookWorker | null = null;
+const app = await buildApp({ onPaypalWebhookPending: () => webhookWorker?.wake() });
+webhookWorker = createPaypalWebhookWorkerFromEnvironment({
   info: (fields, message) => app.log.info(fields, message),
   warn: (fields, message) => app.log.warn(fields, message),
 });

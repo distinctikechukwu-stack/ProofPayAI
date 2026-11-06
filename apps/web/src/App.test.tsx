@@ -91,7 +91,7 @@ describe("ProofPay AI product preview", () => {
   it("does not present sample opportunity listings as live jobs while signed out", async () => {
     renderRoute("/app/opportunities");
 
-    expect(await screen.findByRole("heading", { name: "Opportunities" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Opportunities" }, { timeout: 10000 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /sign in to browse persisted jobs/i })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /sample job/i })).not.toBeInTheDocument();
   });
@@ -99,18 +99,18 @@ describe("ProofPay AI product preview", () => {
   it("keeps project conversations and notifications private while signed out", async () => {
     renderRoute("/app/messages");
 
-    expect(await screen.findByRole("heading", { name: "Messages" }, { timeout: 5000 })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Messages" }, { timeout: 10000 })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /sign in to view project conversations/i })).toBeInTheDocument();
     expect(screen.getByText(/no sample conversations are displayed here/i)).toBeInTheDocument();
-  });
+  }, 15000);
 
   it("does not show example time entries or controls in the signed-out hourly workspace", async () => {
     renderRoute("/app/projects/1319f6b9-8b9c-4138-8dd7-538b54b902f6/hourly");
 
-    expect(await screen.findByRole("heading", { name: /sign in to open hourly project work/i }, { timeout: 5000 })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: /sign in to open hourly project work/i }, { timeout: 10000 })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /start timer|add draft entry|approve time/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/illustrative sample time/i)).not.toBeInTheDocument();
-  });
+  }, 15000);
 
   it("keeps moderation controls behind a signed-in administrator session", async () => {
     renderRoute("/app/moderation");

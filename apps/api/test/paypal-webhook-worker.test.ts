@@ -32,6 +32,23 @@ function makeWorker(
 }
 
 describe("durable PayPal webhook worker", () => {
+  it("logs worker readiness without writing configuration or event details", async () => {
+    const { worker, logger } = makeWorker(async () => ({ data: null, error: null }), async (id) => ({
+      id,
+      status: "SENT",
+      invoiceUrl: null,
+      paidAt: null,
+    }));
+
+    worker.start();
+    await worker.stop();
+
+    expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ stage: "worker_started", idlePollBackoffMs: [1_000, 2_000, 4_000, 8_000, 15_000] }), expect.any(String));
+    const output = JSON.stringify(logger.info.mock.calls);
+    expect(output).not.toContain("PAYPAL_WEBHOOK_ID");
+    expect(output).not.toContain("SUPABASE_SERVICE_ROLE_KEY");
+  });
+
   it("does not construct the worker when the real webhook ID is not configured", () => {
     vi.stubEnv("SUPABASE_URL", "https://proofpay-staging.supabase.co");
     vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "mock-service-role-key");
@@ -49,12 +66,192 @@ describe("durable PayPal webhook worker", () => {
     }
   });
 
+  it("drains durable queued events on worker startup after a process restart", async () => {
+    let durableQueue = [claimedEvent()];
+    const { worker, service, paypal } = makeWorker(async (name) => {
+      if (name === "claim_paypal_webhook_event") return { data: durableQueue.shift() ?? null, error: null };
+      return { data: { duplicate: false, matched: true, applied: true, status: "paid" }, error: null };
+    }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: null }));
+
+    worker.start();
+    await vi.waitFor(() => expect(paypal.showInvoice).toHaveBeenCalledTimes(1));
+    await worker.stop();
+
+    expect(service.rpc).toHaveBeenCalledWith("claim_paypal_webhook_event");
+    expect(service.rpc).toHaveBeenCalledWith("complete_verified_paypal_webhook", expect.any(Object));
+    expect(durableQueue).toHaveLength(0);
+  });
+
+  it("backs off idle polling by 1, 2, 4, 8, and 15 seconds, capped at 15 seconds", async () => {
+    vi.useFakeTimers();
+    const { worker, service } = makeWorker(async () => ({ data: null, error: null }), async (id) => ({
+      id,
+      status: "SENT",
+      invoiceUrl: null,
+      paidAt: null,
+    }));
+    try {
+      worker.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(service.rpc).toHaveBeenCalledTimes(1);
+
+      let calls = 1;
+      for (const interval of [1_000, 2_000, 4_000, 8_000, 15_000, 15_000]) {
+        await vi.advanceTimersByTimeAsync(interval - 1);
+        expect(service.rpc).toHaveBeenCalledTimes(calls);
+        await vi.advanceTimersByTimeAsync(1);
+        calls += 1;
+        expect(service.rpc).toHaveBeenCalledTimes(calls);
+      }
+    } finally {
+      await worker.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers queued work after a missed notification on the next bounded idle poll", async () => {
+    vi.useFakeTimers();
+    let queued = false;
+    let claimed = false;
+    const { worker, service, paypal } = makeWorker(async (name) => {
+      if (name === "claim_paypal_webhook_event") {
+        if (queued && !claimed) {
+          claimed = true;
+          return { data: claimedEvent(), error: null };
+        }
+        return { data: null, error: null };
+      }
+      return { data: { duplicate: false, matched: true, applied: true, status: "paid" }, error: null };
+    }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: null }));
+    try {
+      worker.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(4_000);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(paypal.showInvoice).not.toHaveBeenCalled();
+
+      // Simulate a durable enqueue whose in-process notification was lost.
+      queued = true;
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(paypal.showInvoice).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(paypal.showInvoice).toHaveBeenCalledTimes(1);
+      expect(service.rpc).toHaveBeenCalledWith("complete_verified_paypal_webhook", expect.any(Object));
+    } finally {
+      await worker.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces concurrent notifications and serializes their queue passes", async () => {
+    let claimCount = 0;
+    let releaseInitialClaim: (() => void) | undefined;
+    const initialClaim = new Promise<{ data: null; error: null }>((resolve) => {
+      releaseInitialClaim = () => resolve({ data: null, error: null });
+    });
+    const { worker, service, paypal } = makeWorker(async (name) => {
+      if (name !== "claim_paypal_webhook_event") return { data: { duplicate: false, matched: true, applied: true, status: "paid" }, error: null };
+      claimCount += 1;
+      if (claimCount === 1) return initialClaim;
+      return { data: claimCount === 2 ? claimedEvent() : null, error: null };
+    }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: null }));
+
+    const notifications = [worker.wake(), worker.wake(), worker.wake()];
+    releaseInitialClaim?.();
+    await Promise.all(notifications);
+
+    expect(claimCount).toBe(3);
+    expect(paypal.showInvoice).toHaveBeenCalledTimes(1);
+    expect(service.rpc.mock.calls.filter(([name]) => name === "complete_verified_paypal_webhook")).toHaveLength(1);
+  });
+
+  it("continues immediately after a full 25-event batch and does not serialize the next batch behind the idle delay", async () => {
+    vi.useFakeTimers();
+    let claimed = 0;
+    const { worker, service, paypal } = makeWorker(async (name) => {
+      if (name === "claim_paypal_webhook_event") {
+        claimed += 1;
+        if (claimed <= 26) {
+          const suffix = String(claimed).padStart(12, "0");
+          return {
+            data: {
+              ...claimedEvent(),
+              event_id: `00000000-0000-4000-8000-${suffix}`,
+              provider_event_id: `WH-EVENT-${claimed}`,
+            },
+            error: null,
+          };
+        }
+        return { data: null, error: null };
+      }
+      return { data: { duplicate: false, matched: true, applied: true, status: "paid" }, error: null };
+    }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: null }));
+    try {
+      worker.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(paypal.showInvoice).toHaveBeenCalledTimes(26);
+      expect(claimed).toBe(27);
+      expect(service.rpc.mock.calls.filter(([name]) => name === "complete_verified_paypal_webhook")).toHaveLength(26);
+    } finally {
+      await worker.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for in-flight work during shutdown and cancels the idle timer", async () => {
+    let releaseClaim: ((value: { data: null; error: null }) => void) | undefined;
+    let markClaimStarted: (() => void) | undefined;
+    const claimStarted = new Promise<void>((resolve) => { markClaimStarted = resolve; });
+    const pendingClaim = new Promise<{ data: null; error: null }>((resolve) => { releaseClaim = resolve; });
+    const { worker, service } = makeWorker(async () => {
+      markClaimStarted?.();
+      return pendingClaim;
+    }, async (id) => ({ id, status: "SENT", invoiceUrl: null, paidAt: null }));
+
+    worker.start();
+    await claimStarted;
+    let stopped = false;
+    const stopping = worker.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    releaseClaim?.({ data: null, error: null });
+    await stopping;
+    const callsAtStop = service.rpc.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(stopped).toBe(true);
+    expect(service.rpc).toHaveBeenCalledTimes(callsAtStop);
+  });
+
+  it("catches a rejected startup wake promise", async () => {
+    const { worker, logger } = makeWorker(async () => ({ data: null, error: null }), async (id) => ({
+      id,
+      status: "SENT",
+      invoiceUrl: null,
+      paidAt: null,
+    }));
+    vi.spyOn(worker, "wake").mockRejectedValue(new Error("private diagnostic"));
+
+    worker.start();
+    await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: "worker_wake", errorCode: "wake_failed" }),
+      expect.any(String),
+    ));
+    await worker.stop();
+
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain("private diagnostic");
+  });
+
   it("reconciles a PAID provider snapshot instead of trusting stale event status", async () => {
     const names: string[] = [];
     const { worker, service, paypal } = makeWorker(async (name) => {
       names.push(name);
       if (name === "claim_paypal_webhook_event") return { data: names.filter((entry) => entry === name).length === 1 ? claimedEvent() : null, error: null };
-      return { data: { matched: true, applied: true, status: "paid" }, error: null };
+      return { data: { duplicate: false, matched: true, applied: true, status: "paid" }, error: null };
     }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: "2026-11-02T12:00:00Z" }));
 
     await worker.processAvailable();
@@ -80,7 +277,7 @@ describe("durable PayPal webhook worker", () => {
     });
     const { worker, service, paypal } = makeWorker(async (name) => {
       if (name === "claim_paypal_webhook_event") return { data: claimed ? null : (claimed = true, claimedEvent()), error: null };
-      return { data: { matched: true, applied: true }, error: null };
+      return { data: { duplicate: false, matched: true, applied: true, status: "paid" }, error: null };
     }, async () => providerRead);
 
     const firstPass = worker.processAvailable();
@@ -90,6 +287,70 @@ describe("durable PayPal webhook worker", () => {
 
     expect(paypal.showInvoice).toHaveBeenCalledTimes(1);
     expect(service.rpc).toHaveBeenCalledTimes(3);
+  });
+
+  it("can wake immediately after a durable enqueue notification", async () => {
+    let claimed = false;
+    const { worker, service, paypal } = makeWorker(async (name) => {
+      if (name === "claim_paypal_webhook_event") return { data: claimed ? null : (claimed = true, claimedEvent()), error: null };
+      return { data: { duplicate: false, matched: true, applied: true, status: "paid" }, error: null };
+    }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: null }));
+
+    await worker.wake();
+
+    expect(paypal.showInvoice).toHaveBeenCalledTimes(1);
+    expect(service.rpc).toHaveBeenCalledWith("complete_verified_paypal_webhook", expect.any(Object));
+  });
+
+  it("rechecks the queue when an enqueue notification arrives during an empty claim", async () => {
+    let claimCount = 0;
+    let releaseInitialClaim: (() => void) | undefined;
+    const initialClaim = new Promise<{ data: null; error: null }>((resolve) => {
+      releaseInitialClaim = () => resolve({ data: null, error: null });
+    });
+    const { worker, service, paypal } = makeWorker(async (name) => {
+      if (name !== "claim_paypal_webhook_event") return { data: { duplicate: false, matched: true, applied: true, status: "paid" }, error: null };
+      claimCount += 1;
+      if (claimCount === 1) return initialClaim;
+      return { data: claimCount === 2 ? claimedEvent() : null, error: null };
+    }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: null }));
+
+    const initialPass = worker.processAvailable();
+    const notifiedPass = worker.wake();
+    releaseInitialClaim?.();
+    await Promise.all([initialPass, notifiedPass]);
+
+    expect(claimCount).toBe(3);
+    expect(paypal.showInvoice).toHaveBeenCalledTimes(1);
+    expect(service.rpc).toHaveBeenCalledWith("complete_verified_paypal_webhook", expect.any(Object));
+  });
+
+  it("uses durable claims to prevent separate worker instances processing one event concurrently", async () => {
+    let claimed = false;
+    let releaseProviderRead: (() => void) | undefined;
+    const providerRead = new Promise<{ id: string; status: string; invoiceUrl: null; paidAt: null }>((resolve) => {
+      releaseProviderRead = () => resolve({ id: providerInvoiceId, status: "PAID", invoiceUrl: null, paidAt: null });
+    });
+    const sharedQueueRpc = async (name: string) => {
+      if (name === "claim_paypal_webhook_event") {
+        if (claimed) return { data: null, error: null };
+        claimed = true;
+        return { data: claimedEvent(), error: null };
+      }
+      return { data: { duplicate: false, matched: true, applied: true, status: "paid" }, error: null };
+    };
+    const first = makeWorker(sharedQueueRpc, async () => providerRead);
+    const second = makeWorker(sharedQueueRpc, async () => providerRead);
+
+    const processing = Promise.all([first.worker.processAvailable(), second.worker.processAvailable()]);
+    releaseProviderRead?.();
+    await processing;
+
+    const showInvoiceCalls = first.paypal.showInvoice.mock.calls.length + second.paypal.showInvoice.mock.calls.length;
+    const completionCalls = [...first.service.rpc.mock.calls, ...second.service.rpc.mock.calls]
+      .filter(([name]) => name === "complete_verified_paypal_webhook");
+    expect(showInvoiceCalls).toBe(1);
+    expect(completionCalls).toHaveLength(1);
   });
 
   it("schedules transient provider failures without retrying inline", async () => {
@@ -141,7 +402,7 @@ describe("durable PayPal webhook worker", () => {
 
   it("dead-letters permanent provider authorization failures", async () => {
     let claimed = false;
-    const { worker, service, paypal } = makeWorker(async (name) => {
+    const { worker, service, paypal, logger } = makeWorker(async (name) => {
       if (name === "claim_paypal_webhook_event") return { data: claimed ? null : (claimed = true, claimedEvent()), error: null };
       return { data: { status: "dead_lettered" }, error: null };
     }, async () => { throw new PaypalApiError(403, "credentials rejected"); });
@@ -153,13 +414,27 @@ describe("durable PayPal webhook worker", () => {
       p_failure_code: "provider_http_403",
       p_permanent: true,
     }));
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: "dead_lettered", errorCode: "provider_http_403" }), expect.any(String));
+  });
+
+  it("does not report a retry outcome when the retry receipt is malformed", async () => {
+    let claimed = false;
+    const { worker, logger } = makeWorker(async (name) => {
+      if (name === "claim_paypal_webhook_event") return { data: claimed ? null : (claimed = true, claimedEvent()), error: null };
+      return { data: { status: "unknown" }, error: null };
+    }, async () => { throw new PaypalApiError(503, "provider unavailable"); });
+
+    await worker.processAvailable();
+
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: "retry_schedule", errorCode: "invalid_retry_receipt" }), expect.any(String));
+    expect(logger.warn.mock.calls.some(([fields]) => (fields as Record<string, unknown>).stage === "retry_scheduled" || (fields as Record<string, unknown>).stage === "dead_lettered")).toBe(false);
   });
 
   it("marks an authoritative provider 404 as unmatched without changing an invoice", async () => {
     let claimed = false;
     const { worker, service } = makeWorker(async (name) => {
       if (name === "claim_paypal_webhook_event") return { data: claimed ? null : (claimed = true, claimedEvent()), error: null };
-      return { data: { matched: false, status: "provider_invoice_not_found" }, error: null };
+      return { data: { duplicate: false, matched: false, status: "provider_invoice_not_found" }, error: null };
     }, async () => { throw new PaypalApiError(404, "not found"); });
 
     await worker.processAvailable();
@@ -174,6 +449,45 @@ describe("durable PayPal webhook worker", () => {
       p_observed_at: null,
     });
     expect(service.rpc).not.toHaveBeenCalledWith("retry_paypal_webhook_event", expect.anything());
+  });
+
+  it("does not report reconciliation when a provider invoice has no local match", async () => {
+    let claimed = false;
+    const { worker, logger } = makeWorker(async (name) => {
+      if (name === "claim_paypal_webhook_event") return { data: claimed ? null : (claimed = true, claimedEvent()), error: null };
+      return { data: { duplicate: false, matched: false, applied: false, invoiceId: null, status: null }, error: null };
+    }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: null }));
+
+    await worker.processAvailable();
+
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: "unmatched", errorCode: "invoice_not_linked_locally" }), expect.any(String));
+    expect(logger.info.mock.calls.some(([fields]) => (fields as Record<string, unknown>).stage === "completed")).toBe(false);
+  });
+
+  it("reports a stale provider snapshot without claiming it changed the local invoice", async () => {
+    let claimed = false;
+    const { worker, logger } = makeWorker(async (name) => {
+      if (name === "claim_paypal_webhook_event") return { data: claimed ? null : (claimed = true, claimedEvent()), error: null };
+      return { data: { duplicate: false, matched: true, applied: false, status: "paid" }, error: null };
+    }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: null }));
+
+    await worker.processAvailable();
+
+    expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ stage: "snapshot_not_applied" }), expect.any(String));
+    expect(logger.info.mock.calls.some(([fields]) => (fields as Record<string, unknown>).stage === "completed")).toBe(false);
+  });
+
+  it("does not report successful reconciliation when the completion receipt is malformed", async () => {
+    let claimed = false;
+    const { worker, logger } = makeWorker(async (name) => {
+      if (name === "claim_paypal_webhook_event") return { data: claimed ? null : (claimed = true, claimedEvent()), error: null };
+      return { data: {}, error: null };
+    }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: null }));
+
+    await worker.processAvailable();
+
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: "completion_receipt", errorCode: "invalid_completion_receipt" }), expect.any(String));
+    expect(logger.info.mock.calls.some(([fields]) => (fields as Record<string, unknown>).stage === "completed")).toBe(false);
   });
 
   it("records a completion failure for retry, then a new worker can recover the leased event", async () => {
@@ -192,7 +506,7 @@ describe("durable PayPal webhook worker", () => {
     let restartClaims = 0;
     const restarted = makeWorker(async (name) => {
       if (name === "claim_paypal_webhook_event") return { data: restartClaims++ === 0 ? claimedEvent(secondLease, 2) : null, error: null };
-      return { data: { matched: true, applied: true, status: "sent" }, error: null };
+      return { data: { duplicate: false, matched: true, applied: true, status: "sent" }, error: null };
     }, async (id) => ({ id, status: "SENT", invoiceUrl: null, paidAt: null }));
     await restarted.worker.processAvailable();
 
@@ -205,7 +519,7 @@ describe("durable PayPal webhook worker", () => {
     let claimed = false;
     const { worker, logger } = makeWorker(async (name) => {
       if (name === "claim_paypal_webhook_event") return { data: claimed ? null : (claimed = true, { ...claimedEvent(), payload: { recipient: "release-test-user-008@example.invalid" } }), error: null };
-      return { data: { matched: true }, error: null };
+      return { data: { duplicate: false, matched: true, applied: true, status: "sent" }, error: null };
     }, async (id) => ({ id, status: "SENT", invoiceUrl: null, paidAt: null }));
 
     await worker.processAvailable();

@@ -76,6 +76,7 @@ function appFixture(args: {
   paypalWebhookEnqueueTimeoutMs?: number;
   paypalWebhookVerificationTimeoutMs?: number;
   webhookId?: string | null;
+  onPaypalWebhookPending?: () => void | Promise<void>;
 }) {
   const requestClient = {
     auth: { getUser: vi.fn(async () => ({ data: { user: { id: actorId } }, error: null })) },
@@ -99,6 +100,7 @@ function appFixture(args: {
     createSupabaseClient: () => requestClient,
     createAuditSupabaseClient: () => serviceClient,
     paypalWebhookEnqueueTimeoutMs: args.paypalWebhookEnqueueTimeoutMs,
+    onPaypalWebhookPending: args.onPaypalWebhookPending,
     paypal: {
       clientId: "sandbox-client-id",
       clientSecret: "sandbox-client-secret",
@@ -548,6 +550,48 @@ describe("PayPal Sandbox REST boundary", () => {
     expect(serviceRpc).not.toHaveBeenCalled();
   });
 
+  it("rejects malformed webhook payloads before signature verification", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ verification_status: "SUCCESS" }));
+    const { appPromise, serviceRpc } = appFixture({ fetch });
+    app = await appPromise;
+
+    const malformedJson = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json" },
+      payload: "{not-json",
+    });
+    const invalidShape = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-invalid-shape") },
+      payload: { id: "", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
+    });
+
+    expect(malformedJson.statusCode).toBe(400);
+    expect(invalidShape.statusCode).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(serviceRpc).not.toHaveBeenCalled();
+  });
+
+  it("rejects webhook requests with missing PayPal signature headers", async () => {
+    const fetch = vi.fn(async () => jsonResponse({ verification_status: "SUCCESS" }));
+    const { appPromise, serviceRpc } = appFixture({ fetch });
+    app = await appPromise;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", "paypal-transmission-id": "transmission-incomplete" },
+      payload: { id: "event-incomplete-headers", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: "PayPal signature headers are incomplete." });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(serviceRpc).not.toHaveBeenCalled();
+  });
+
   it("serves the API without a webhook ID while keeping webhook delivery disabled", async () => {
     const fetch = vi.fn(async () => jsonResponse({ verification_status: "SUCCESS" }));
     const { appPromise, serviceRpc } = appFixture({ fetch, webhookId: null });
@@ -645,6 +689,150 @@ describe("PayPal Sandbox REST boundary", () => {
     }));
   });
 
+  it("notifies the worker after a validated receipt reports pending work", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse({ verification_status: "SUCCESS" }));
+    const onPaypalWebhookPending = vi.fn();
+    const { appPromise } = appFixture({
+      fetch,
+      onPaypalWebhookPending,
+      serviceRpc: async () => ({ data: { duplicate: false, processed: false, pending: true }, error: null }),
+    });
+    app = await appPromise;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-wake-pending") },
+      payload: { id: "event-wake-pending", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
+    });
+    await vi.waitFor(() => expect(onPaypalWebhookPending).toHaveBeenCalledTimes(1));
+
+    expect(response.statusCode).toBe(202);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not notify the worker after an invalid signature or failed durable enqueue", async () => {
+    const invalidSignatureFetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse({ verification_status: "FAILURE" }));
+    const invalidWake = vi.fn();
+    const invalidFixture = appFixture({ fetch: invalidSignatureFetch, onPaypalWebhookPending: invalidWake });
+    app = await invalidFixture.appPromise;
+    const invalidSignature = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-invalid-wake") },
+      payload: { id: "event-invalid-wake", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
+    });
+    expect(invalidSignature.statusCode).toBe(400);
+    expect(invalidWake).not.toHaveBeenCalled();
+    await app.close();
+    app = undefined;
+
+    const enqueueFailureFetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse({ verification_status: "SUCCESS" }));
+    const failedEnqueueWake = vi.fn();
+    const failedEnqueueFixture = appFixture({
+      fetch: enqueueFailureFetch,
+      onPaypalWebhookPending: failedEnqueueWake,
+      serviceRpc: async () => ({ data: null, error: { code: "08006" } }),
+    });
+    app = await failedEnqueueFixture.appPromise;
+    const failedEnqueue = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-enqueue-failure-wake") },
+      payload: { id: "event-enqueue-failure-wake", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
+    });
+
+    expect(failedEnqueue.statusCode).toBe(503);
+    expect(failedEnqueueWake).not.toHaveBeenCalled();
+  });
+
+  it("notifies on duplicate delivery only when its durable receipt is still pending", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse({ verification_status: "SUCCESS" }));
+    const onPaypalWebhookPending = vi.fn();
+    const { appPromise } = appFixture({
+      fetch,
+      onPaypalWebhookPending,
+      serviceRpc: async () => ({ data: { duplicate: true, processed: false, pending: true }, error: null }),
+    });
+    app = await appPromise;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-duplicate-pending") },
+      payload: { id: "event-duplicate-pending", event_type: "INVOICING.INVOICE.SENT", resource: { id: "PAYPAL-INV-1" } },
+    });
+    await vi.waitFor(() => expect(onPaypalWebhookPending).toHaveBeenCalledTimes(1));
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ duplicate: true, accepted: true });
+  });
+
+  it("keeps the durable HTTP acknowledgment when the non-blocking worker callback rejects", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse({ verification_status: "SUCCESS" }));
+    const onPaypalWebhookPending = vi.fn(async () => { throw new Error("must not reach request output"); });
+    const { appPromise } = appFixture({
+      fetch,
+      onPaypalWebhookPending,
+      serviceRpc: async () => ({ data: { duplicate: false, processed: false, pending: true }, error: null }),
+    });
+    app = await appPromise;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-wake-failure") },
+      payload: { id: "event-wake-failure", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
+    });
+    await vi.waitFor(() => expect(onPaypalWebhookPending).toHaveBeenCalledTimes(1));
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({ verified: true, accepted: true, duplicate: false });
+    expect(response.body).not.toContain("must not reach request output");
+  });
+
+  it("returns the durable acknowledgment without waiting for background reconciliation", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse({ verification_status: "SUCCESS" }));
+    let finishWake: (() => void) | undefined;
+    const wakePending = new Promise<void>((resolve) => { finishWake = resolve; });
+    const onPaypalWebhookPending = vi.fn(() => wakePending);
+    const { appPromise } = appFixture({
+      fetch,
+      onPaypalWebhookPending,
+      serviceRpc: async () => ({ data: { duplicate: false, processed: false, pending: true }, error: null }),
+    });
+    app = await appPromise;
+
+    const responsePromise = app.inject({
+      method: "POST",
+      url: "/api/webhooks/paypal",
+      headers: { "content-type": "application/json", ...webhookHeaders("transmission-wake-nonblocking") },
+      payload: { id: "event-wake-nonblocking", event_type: "INVOICING.INVOICE.PAID", resource: { id: "PAYPAL-INV-1" } },
+    });
+    await vi.waitFor(() => expect(onPaypalWebhookPending).toHaveBeenCalledTimes(1));
+    const response = await Promise.race([
+      responsePromise,
+      new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 1_000)),
+    ]);
+    finishWake?.();
+
+    expect(response).not.toBe("timeout");
+    expect(response).not.toBeNull();
+    if (response !== "timeout") expect(response?.statusCode).toBe(202);
+  });
+
   it("returns a retryable response when durable enqueue fails", async () => {
     const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
       ? paypalOAuthResponse()
@@ -688,13 +876,20 @@ describe("PayPal Sandbox REST boundary", () => {
     expect(serviceRpc).toHaveBeenCalledTimes(1);
   });
 
-  it("verifies redeliveries then relies on durable event-ID deduplication", async () => {
+  it("deduplicates concurrent redeliveries by provider event ID", async () => {
     const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
       ? paypalOAuthResponse()
       : jsonResponse({ verification_status: "SUCCESS" }));
+    const storedEventIds = new Set<string>();
     const { appPromise, serviceRpc } = appFixture({
       fetch,
-      serviceRpc: async () => ({ data: { duplicate: true, processed: true, pending: false }, error: null }),
+      serviceRpc: async (name, values) => {
+        if (name !== "enqueue_verified_paypal_webhook") return { data: null, error: null };
+        const eventId = String(values?.p_provider_event_id);
+        const duplicate = storedEventIds.has(eventId);
+        storedEventIds.add(eventId);
+        return { data: { duplicate, processed: duplicate, pending: !duplicate }, error: null };
+      },
     });
     app = await appPromise;
     const event = { id: "event-duplicate", event_type: "INVOICING.INVOICE.SENT", resource: { id: "PAYPAL-INV-1" } };
@@ -708,7 +903,8 @@ describe("PayPal Sandbox REST boundary", () => {
 
     expect(first.statusCode).toBe(202);
     expect(redelivery.statusCode).toBe(202);
-    expect(redelivery.json()).toEqual({ verified: true, accepted: true, duplicate: true });
+    expect([first.json().duplicate, redelivery.json().duplicate].sort()).toEqual([false, true]);
+    expect(storedEventIds).toEqual(new Set(["event-duplicate"]));
     expect(serviceRpc).toHaveBeenCalledTimes(2);
   });
 

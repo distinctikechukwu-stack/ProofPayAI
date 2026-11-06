@@ -1,0 +1,51 @@
+@media (max-width: 620px) {
+  .mobile-nav-link {
+    min-height: 44px;
+    padding-inline: 12px;
+    font-size: 11px;
+  }
+
+  .topbar-actions .role-toggle {
+    min-height: 44px;
+    padding-inline: 10px;
+    font-size: 11px;
+  }
+
+  .workspace-content :is(p, small, time) {
+    font-size: 11px;
+    line-height: 1.55;
+  }
+
+  .workspace-content :is(label, button, input, textarea, select) {
+    font-size: 12px;
+  }
+
+  .workspace-content input,
+  .workspace-content textarea,
+  .workspace-content select {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .workspace-content button:not(.icon-button) {
+    min-height: 40px;
+  }
+
+  .workspace-content .button-primary,
+  .workspace-content .button-secondary {
+    min-height: 44px;
+  }
+  .workspace-content :is(.eyebrow, .stat-card-label, .stat-card-note, .status-pill) {
+    font-size: 10px;
+    line-height: 1.35;
+  }
+
+  .workspace-content :is(.section-heading h2, .activity-step > div strong, .activity-step p, .activity-step time, .milestone-info strong, .milestone-info > span, .project-total) {
+    font-size: 10px;
+  }
+
+  .workspace-content .status-pill {
+    min-height: 25px;
+    padding-inline: 8px;
+  }
+}

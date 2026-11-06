@@ -11,6 +11,7 @@ const migrationName = '202611020001_scope_analysis_actor_membership.sql';
 const laterMigrationName = '202611020002_paypal_client_billing_email.sql';
 const newestMigrationName = '202611020003_paypal_claim_invoice_number_scope.sql';
 const webhookMigrationName = '202611020004_paypal_webhook_durable_processing.sql';
+const completionMigrationName = '202611050001_project_completion_workflow.sql';
 const predecessor = readFileSync(join(migrationsDirectory, predecessorName), 'utf8');
 const migration = readFileSync(join(migrationsDirectory, migrationName), 'utf8');
 const originalMigration = readFileSync(join(migrationsDirectory, '202610290001_core_project_security.sql'), 'utf8');
@@ -34,7 +35,8 @@ test('actor membership correction remains migration 15 ahead of later correction
   assert.equal(migrationFiles.indexOf(laterMigrationName), 15, 'Invoice-recipient correction must follow migration 15');
   assert.equal(migrationFiles.indexOf(newestMigrationName), 16, 'Invoice-claim correction must remain migration 17');
   assert.equal(migrationFiles.indexOf(webhookMigrationName), 17, 'Webhook durability migration must follow all 17 existing migrations');
-  assert.equal(migrationFiles.at(-1), webhookMigrationName, 'Webhook durability migration must be last in timestamp order');
+  assert.equal(migrationFiles.indexOf(completionMigrationName), 18, 'Project completion workflow must follow webhook durability migration');
+  assert.equal(migrationFiles.at(-1), completionMigrationName, 'Project completion workflow must be last in timestamp order');
   assert.match(migration.trim().toLowerCase(), /^begin;/);
   assert.match(migration.trim().toLowerCase(), /commit;$/);
   assert.equal((migration.match(/create or replace function/gi) ?? []).length, 1);

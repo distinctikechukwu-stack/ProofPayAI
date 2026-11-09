@@ -10,6 +10,7 @@ const paypal = readFileSync(new URL("../apps/api/src/paypal.ts", import.meta.url
 const paypalTests = readFileSync(new URL("../apps/api/test/paypal.test.ts", import.meta.url), "utf8");
 const worker = readFileSync(new URL("../apps/api/src/paypal-webhook-worker.ts", import.meta.url), "utf8");
 const sqlTest = readFileSync(new URL("../supabase/tests/paypal_provider_snapshot_ordering.test.sql", import.meta.url), "utf8");
+const postMigrationFixture = readFileSync(new URL("../scripts/fixtures/project-completion-post-migration.sql", import.meta.url), "utf8");
 const concurrency = readFileSync(new URL("../scripts/test-paypal-provider-snapshot-concurrency.mjs", import.meta.url), "utf8");
 const postgresRunner = readFileSync(new URL("../scripts/run-paypal-provider-snapshot-postgres-validation.mjs", import.meta.url), "utf8");
 const workflow = readFileSync(new URL("../.github/workflows/cloudflare-paypal-webhook-validation.yml", import.meta.url), "utf8");
@@ -131,6 +132,21 @@ test("pgTAP exercises the real completion RPC, trigger, grants, search paths, an
   assert.match(sqlTest, /a create retry preserves the invoice identity/);
   assert.match(sqlTest, /begin_paypal_invoice_send transitions draft to send_pending/);
   assert.match(sqlTest, /finalize_paypal_operation rejects conflicting status changes/);
+});
+
+test("create and retry pgTAP scenarios use an eligible milestone isolated from snapshot fixtures", () => {
+  const createMilestones = [...sqlTest.matchAll(/public\.begin_paypal_invoice_create\(\s*\(select id from public\.milestones where project_id = '([^']+)' and sequence = 1\)/gi)]
+    .map((match) => match[1]);
+  assert.deepEqual(createMilestones, [
+    "00000000-0000-4000-8000-000000000400",
+    "00000000-0000-4000-8000-000000000400",
+    "00000000-0000-4000-8000-000000000600",
+  ]);
+  assert.match(postMigrationFixture, /add_project\(\s*'00000000-0000-4000-8000-000000000400',[\s\S]*?'fixed', 'in_progress', array\['approved'\], array\[10000\]::bigint\[\]/i);
+  assert.match(sqlTest, /the create\/retry fixture milestone is eligible and has no existing invoice/);
+  assert.match(sqlTest, /'SYNTHETIC-SNAPSHOT-ORDERING-01'[\s\S]*?where project\.id = '00000000-0000-4000-8000-000000000900'/);
+  assert.match(sqlTest, /'SYNTHETIC-SNAPSHOT-OBSERVATION-01'[\s\S]*?where project\.id = '00000000-0000-4000-8000-000000000800'/);
+  assert.match(sqlTest, /'SYNTHETIC-SNAPSHOT-CANCEL-01'[\s\S]*?where project\.id = '00000000-0000-4000-8000-000000000500'/);
 });
 
 test("a deterministic two-session PostgreSQL race covers older PAID after newer REFUNDED", () => {

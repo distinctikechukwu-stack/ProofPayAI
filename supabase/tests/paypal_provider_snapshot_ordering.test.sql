@@ -192,6 +192,38 @@ create temporary table migration20_operation_test (
   receipt jsonb not null
 );
 
+select extensions.ok(
+  exists (
+    select 1
+    from public.milestones as milestone
+    join public.projects as project on project.id = milestone.project_id
+    join public.agreement_versions as agreement
+      on agreement.id = milestone.agreement_version_id and agreement.project_id = project.id
+    where project.id = '00000000-0000-4000-8000-000000000400'
+      and milestone.sequence = 1
+      and milestone.workflow_status = 'approved'
+      and project.current_agreement_version_id = agreement.id
+      and agreement.state = 'accepted'
+      and (select count(distinct acceptance.member_role)
+           from public.agreement_acceptances as acceptance
+           where acceptance.agreement_version_id = agreement.id) = 2
+      and exists (
+        select 1 from public.project_members as member
+        where member.project_id = project.id
+          and member.user_id = '00000000-0000-4000-8000-000000000002'
+          and member.role = 'freelancer'
+      )
+  )
+  and not exists (
+    select 1 from public.invoices as invoice
+    where invoice.milestone_id = (
+      select id from public.milestones
+      where project_id = '00000000-0000-4000-8000-000000000400' and sequence = 1
+    )
+  ),
+  'the create/retry fixture milestone is eligible and has no existing invoice'
+);
+
 insert into migration20_operation_test (name, invoice_id, claim_id, receipt)
 select 'create_initial',
        (receipt->'invoice'->>'id')::uuid,
@@ -199,7 +231,7 @@ select 'create_initial',
        receipt
 from (
   select public.begin_paypal_invoice_create(
-    (select id from public.milestones where project_id = '00000000-0000-4000-8000-000000000900' and sequence = 1),
+    (select id from public.milestones where project_id = '00000000-0000-4000-8000-000000000400' and sequence = 1),
     'TEST-PROVIDER-OP-CREATE-1',
     '00000000-0000-4000-8000-000000000002'
   ) as receipt
@@ -229,7 +261,7 @@ select 'create_retry',
        receipt
 from (
   select public.begin_paypal_invoice_create(
-    (select id from public.milestones where project_id = '00000000-0000-4000-8000-000000000900' and sequence = 1),
+    (select id from public.milestones where project_id = '00000000-0000-4000-8000-000000000400' and sequence = 1),
     'TEST-PROVIDER-OP-CREATE-2',
     '00000000-0000-4000-8000-000000000002'
   ) as receipt
@@ -658,7 +690,7 @@ select
   'SENT', '2026-11-07T10:00:00Z'
 from public.projects as project
 join public.milestones as milestone on milestone.project_id = project.id
-where project.id = '00000000-0000-4000-8000-000000000400'
+where project.id = '00000000-0000-4000-8000-000000000800'
   and milestone.sequence = 1;
 select extensions.is(
   (pg_temp.apply_snapshot(

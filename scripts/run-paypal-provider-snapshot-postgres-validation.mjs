@@ -6,6 +6,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parsePgTapDiagnostics } from './paypal-pgtap-diagnostics.mjs';
+import {
+  parseSupabaseContainerState,
+  parseSupabaseProjectContainerNames,
+  parseSupabaseStartupDiagnostics,
+  runSupabaseStartWithDiagnostics,
+} from './supabase-startup-diagnostics.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const migration19 = '202611050001_project_completion_workflow.sql';
@@ -19,8 +25,10 @@ let stage = 'preflight';
 let runEnv;
 let cli;
 let localRoot;
+let projectId;
 let tempRoot;
 let stackStartAttempted = false;
+let stackCleanupResult = null;
 let exitCode = 0;
 
 function emit(phase, result, details = {}) {
@@ -123,6 +131,59 @@ async function captureCommand(command, args, options) {
       stdout: '', stderr: '', spawnErrorCode: typeof error?.code === 'string' ? error.code : null,
     };
   }
+}
+
+async function collectSupabaseStartupDiagnostics(error) {
+  const options = { cwd: localRoot, env: runEnv, timeoutMs: 10_000 };
+  const containerListResult = await captureCommand('docker', [
+    'ps', '-a', '--filter', 'name=' + projectId, '--format', '{{.Names}}',
+  ], options);
+  const containerNames = containerListResult.code === 0 && !containerListResult.timedOut
+    ? parseSupabaseProjectContainerNames(containerListResult.stdout, projectId)
+    : [];
+  const containerStates = await Promise.all(containerNames.map(async (name) => {
+    const inspect = await captureCommand('docker', [
+      'inspect', '--format', '{{.Name}}|{{.State.Status}}|{{.State.ExitCode}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{.State.OOMKilled}}', name,
+    ], options);
+    if (inspect.code !== 0 || inspect.timedOut || inspect.outputTruncated) return null;
+    const parsed = parseSupabaseContainerState(inspect.stdout, name, projectId);
+    return parsed ? { ...parsed, outputTruncated: inspect.outputTruncated } : null;
+  }));
+  const dockerInfoResult = await captureCommand('docker', [
+    'info', '--format', '{{.MemTotal}}|{{.NCPU}}|{{.DockerRootDir}}',
+  ], options);
+  const dockerRoot = dockerInfoResult.code === 0 && !dockerInfoResult.timedOut
+    ? dockerInfoResult.stdout.trim().split('|')[2]
+    : null;
+  const safeDockerRoot = typeof dockerRoot === 'string'
+    && /^\/[A-Za-z0-9._/-]{1,200}$/.test(dockerRoot)
+    && !dockerRoot.split('/').includes('..')
+    ? dockerRoot
+    : null;
+  const diskPaths = ['-Pk', localRoot];
+  if (safeDockerRoot && safeDockerRoot !== localRoot) diskPaths.push(safeDockerRoot);
+  const diskResult = await captureCommand('df', diskPaths, options);
+  return parseSupabaseStartupDiagnostics({
+    processResult: error?.processResult ?? {},
+    projectId,
+    containerListResult,
+    containerNames,
+    containers: containerStates.filter(Boolean),
+    dockerInfoResult,
+    diskResult,
+  });
+}
+
+async function stopLocalStack() {
+  stackCleanupResult = await captureCommand(cli, ['stop', '--no-backup'], {
+    cwd: localRoot, env: runEnv, timeoutMs: 90_000,
+  });
+  return {
+    kind: stackCleanupResult.code === 0 && !stackCleanupResult.timedOut ? 'stopped' : 'failed',
+    exitStatus: Number.isInteger(stackCleanupResult.code) ? stackCleanupResult.code : null,
+    timedOut: Boolean(stackCleanupResult.timedOut),
+    outputTruncated: Boolean(stackCleanupResult.outputTruncated),
+  };
 }
 
 function diagnosePgTapCommand(result, tool, testFile) {
@@ -239,7 +300,7 @@ async function main() {
     mkdir(temp, { recursive: true }),
     mkdir(localMigrations, { recursive: true }),
   ]);
-  const projectId = 'ppv' + randomBytes(7).toString('hex');
+  projectId = 'ppv' + randomBytes(7).toString('hex');
   runEnv = buildPrivateEnv(home, temp);
   const config = [
     'project_id = "' + projectId + '"',
@@ -293,7 +354,12 @@ async function main() {
 
   stage = 'local_stack_start';
   stackStartAttempted = true;
-  await run(cli, ['start', '--exclude', excludedServices], { cwd: localRoot, env: runEnv, timeoutMs: 8 * 60_000 });
+  await runSupabaseStartWithDiagnostics({
+    start: () => run(cli, ['start', '--exclude', excludedServices], { cwd: localRoot, env: runEnv, timeoutMs: 8 * 60_000 }),
+    diagnose: collectSupabaseStartupDiagnostics,
+    cleanup: stopLocalStack,
+  });
+  stage = 'local_database_reset';
   await run(cli, ['db', 'reset', '--local', '--no-seed'], { cwd: localRoot, env: runEnv, timeoutMs: 12 * 60_000 });
   const container = 'supabase_db_' + projectId;
   const initialHistory = await psql(container,
@@ -437,9 +503,12 @@ try {
   });
 } finally {
   if (stackStartAttempted && localRoot && cli && runEnv) {
-    const stop = await run(cli, ['stop', '--no-backup'], {
-      cwd: localRoot, env: runEnv, timeoutMs: 90_000, allowFailure: true,
-    }).catch(() => null);
+    const stop = stackCleanupResult?.code === 0 && !stackCleanupResult.timedOut
+      ? stackCleanupResult
+      : await captureCommand(cli, ['stop', '--no-backup'], {
+        cwd: localRoot, env: runEnv, timeoutMs: 90_000,
+      });
+    stackCleanupResult = stop;
     emit('local_stack_cleanup', stop?.code === 0 ? 'stopped' : 'runner_disposal_fallback', {
       processExitStatus: stop?.code ?? null,
     });

@@ -2,6 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { parsePgTapDiagnostics } from './paypal-pgtap-diagnostics.mjs';
+import {
+  parseSupabaseContainerState,
+  parseSupabaseProjectContainerNames,
+  parseSupabaseResourceSnapshot,
+  parseSupabaseStartupDiagnostics,
+  runSupabaseStartWithDiagnostics,
+} from './supabase-startup-diagnostics.mjs';
 
 const migration = readFileSync(new URL("../supabase/migrations/202611070001_paypal_provider_snapshot_ordering.sql", import.meta.url), "utf8").toLowerCase();
 const normalized = migration.replace(/\s+/g, " ");
@@ -272,6 +279,212 @@ test("pgTAP runner isolates each SQL file and retains strict failure behavior", 
   assert.match(postgresRunner, /SHOW_CONTEXT=always/);
   assert.match(postgresRunner, /error\.safeDiagnostic/);
   assert.match(postgresRunner, /await rm\(resolvedTemp, \{ recursive: true, force: true \}\)/);
+  assert.doesNotMatch(postgresRunner, /--linked/);
+  assert.doesNotMatch(postgresRunner, /--db-url/);
+});
+
+const startupProjectId = "ppv123456789abcde";
+const startupContainerName = `supabase_db_${startupProjectId}`;
+
+function startupDiagnostic(stderr, overrides = {}) {
+  return parseSupabaseStartupDiagnostics({
+    processResult: { code: 1, signal: null, timedOut: false, outputTruncated: false, stdout: "", stderr },
+    projectId: startupProjectId,
+    containerListResult: { code: 0, timedOut: false, outputTruncated: false, stdout: "", stderr: "" },
+    ...overrides,
+  });
+}
+
+test("startup diagnostics classify Docker image pull failures without returning raw CLI text", () => {
+  const diagnostic = startupDiagnostic("Error response from daemon: manifest unknown while pulling image");
+  assert.equal(diagnostic.kind, "image_pull_failure");
+  assert.equal(diagnostic.phase, "image_pull");
+  assert.deepEqual(diagnostic.signals, ["image_manifest_unavailable"]);
+  assert.ok(!JSON.stringify(diagnostic).includes("Error response from daemon"));
+});
+
+test("startup diagnostics report health-check failures and the failed Supabase service state", () => {
+  const names = parseSupabaseProjectContainerNames(startupContainerName, startupProjectId);
+  const state = parseSupabaseContainerState(
+    `/${startupContainerName}|exited|1|unhealthy|false`, startupContainerName, startupProjectId,
+  );
+  const diagnostic = startupDiagnostic('service "db" failed health check after connection refused', {
+    containerListResult: { code: 0, timedOut: false, outputTruncated: false, stdout: names.join("\n") },
+    containerNames: names,
+    containers: [state],
+  });
+  assert.equal(diagnostic.kind, "service_health_check_failure");
+  assert.equal(diagnostic.phase, "service_health_check");
+  assert.deepEqual(diagnostic.failedServices, ["db"]);
+  assert.equal(diagnostic.containers.created, true);
+  assert.deepEqual(diagnostic.containers.states, [{
+    name: startupContainerName, service: "db", state: "exited", exitCode: 1, health: "unhealthy", oomKilled: false,
+  }]);
+});
+
+test("startup diagnostics distinguish Docker networking errors", () => {
+  const diagnostic = startupDiagnostic("failed to create network: no route to host");
+  assert.equal(diagnostic.kind, "startup_network_failure");
+  assert.equal(diagnostic.phase, "network_setup");
+  assert.deepEqual(diagnostic.signals, ["network_connectivity_failure"]);
+});
+
+test("startup diagnostics record disk and memory resource failures only from recognized evidence", () => {
+  const diskDiagnostic = startupDiagnostic("write failed: no space left on device", {
+    diskResult: { code: 0, stdout: "Filesystem 1024-blocks Used Available Use% Mounted on\n/dev/root 1000000 999500 500 100% /", timedOut: false },
+  });
+  assert.equal(diskDiagnostic.kind, "resource_failure");
+  assert.equal(diskDiagnostic.resource, "disk");
+  assert.equal(diskDiagnostic.resources.availableDiskKiB, 500);
+
+  const memoryDiagnostic = startupDiagnostic("process was OOMKilled");
+  assert.equal(memoryDiagnostic.kind, "resource_failure");
+  assert.equal(memoryDiagnostic.resource, "memory");
+});
+
+test("resource diagnostics use the lowest free space across checked filesystems without exposing paths", () => {
+  const resources = parseSupabaseResourceSnapshot(
+    "8589934592|4|/var/lib/docker",
+    "Filesystem 1024-blocks Used Available Use% Mounted on\n/dev/work 1000000 100 900000 10% /workspace\n/dev/docker 1000000 999500 500 100% /var/lib/docker",
+  );
+  assert.equal(resources.memoryBytes, 8589934592);
+  assert.equal(resources.cpuCount, 4);
+  assert.equal(resources.availableDiskKiB, 500);
+  assert.equal(resources.filesystemsChecked, 2);
+  assert.ok(!JSON.stringify(resources).includes("/var/lib/docker"));
+});
+
+test("low disk headroom is reported as context without guessing it caused the startup failure", () => {
+  const diagnostic = startupDiagnostic("startup operation failed with an unrecognized error", {
+    diskResult: { code: 0, stdout: "Filesystem 1024-blocks Used Available Use% Mounted on\n/dev/root 1000000 999500 500 100% /", timedOut: false },
+  });
+  assert.equal(diagnostic.kind, "unknown_startup_failure");
+  assert.deepEqual(diagnostic.signals, ["disk_headroom_below_recommended_minimum"]);
+  assert.equal(diagnostic.resources.belowRecommendedDiskMinimum, true);
+});
+
+test("startup diagnostics identify recognized Supabase configuration errors", () => {
+  const diagnostic = startupDiagnostic("failed to parse config: invalid supabase/config.toml");
+  assert.equal(diagnostic.kind, "supabase_cli_configuration_failure");
+  assert.equal(diagnostic.phase, "cli_configuration");
+});
+
+test("unknown startup errors remain unclassified and do not create a guessed service", () => {
+  const diagnostic = startupDiagnostic("startup operation failed with an unrecognized provider error");
+  assert.equal(diagnostic.kind, "unknown_startup_failure");
+  assert.equal(diagnostic.phase, "unclassified");
+  assert.deepEqual(diagnostic.failedServices, []);
+});
+
+test("startup diagnostics distinguish an empty isolated Docker project from failed discovery", () => {
+  const missing = startupDiagnostic("startup aborted");
+  assert.equal(missing.containers.discoveryAvailable, true);
+  assert.equal(missing.containers.created, false);
+  assert.equal(missing.containers.count, 0);
+
+  const unavailable = startupDiagnostic("startup aborted", {
+    containerListResult: { code: 1, timedOut: false, outputTruncated: false, stdout: "", stderr: "private docker error" },
+  });
+  assert.equal(unavailable.containers.discoveryAvailable, false);
+  assert.equal(unavailable.containers.created, null);
+  assert.equal(unavailable.containers.count, null);
+  assert.ok(!JSON.stringify(unavailable).includes("private docker error"));
+
+  const missingInspect = startupDiagnostic("startup aborted", {
+    containerListResult: { code: 0, timedOut: false, outputTruncated: false, stdout: startupContainerName, stderr: "" },
+    containerNames: [startupContainerName],
+  });
+  assert.equal(missingInspect.containers.created, true);
+  assert.equal(missingInspect.containers.count, 1);
+  assert.equal(missingInspect.containers.inspectionFailures, 1);
+});
+
+test("startup diagnostics retain truncation and command exit/timeout evidence", () => {
+  const diagnostic = parseSupabaseStartupDiagnostics({
+    processResult: { code: 1, signal: "SIGTERM", timedOut: true, outputTruncated: true, stdout: "pull access denied", stderr: "" },
+    projectId: startupProjectId,
+    containerListResult: { code: 0, timedOut: false, outputTruncated: true, stdout: "", stderr: "" },
+  });
+  assert.equal(diagnostic.kind, "image_pull_failure");
+  assert.equal(diagnostic.process.exitStatus, 1);
+  assert.equal(diagnostic.process.signal, "SIGTERM");
+  assert.equal(diagnostic.process.spawnErrorCode, null);
+  assert.equal(diagnostic.process.timedOut, true);
+  assert.equal(diagnostic.process.outputTruncated, true);
+  assert.equal(diagnostic.diagnosticOutputTruncated, true);
+});
+
+test("startup diagnostics preserve only allowlisted process spawn error codes", () => {
+  const recognized = parseSupabaseStartupDiagnostics({
+    processResult: { code: null, spawnErrorCode: "ENOENT", stderr: "synthetic private output" },
+    projectId: startupProjectId,
+  });
+  const unrecognized = parseSupabaseStartupDiagnostics({
+    processResult: { code: null, spawnErrorCode: "PRIVATE_VALUE", stderr: "synthetic private output" },
+    projectId: startupProjectId,
+  });
+  assert.equal(recognized.process.spawnErrorCode, "ENOENT");
+  assert.equal(unrecognized.process.spawnErrorCode, null);
+  assert.ok(!JSON.stringify(recognized).includes("synthetic private output"));
+
+  const missingDocker = parseSupabaseStartupDiagnostics({
+    processResult: { code: 1, stderr: "startup failed" },
+    projectId: startupProjectId,
+    containerListResult: { code: null, spawnErrorCode: "ENOENT", timedOut: false, outputTruncated: false },
+  });
+  assert.equal(missingDocker.diagnosticTools.containerList.spawnErrorCode, "ENOENT");
+});
+
+test("startup diagnostics never echo synthetic credentials, connection strings, or arbitrary CLI output", () => {
+  const token = "synthetic-token-value-should-never-appear";
+  const connection = "postgresql://user:password@example.invalid:5432/private";
+  const diagnostic = startupDiagnostic(`service db exited; token=${token}; db=${connection}`, {
+    containerNames: [startupContainerName],
+    containers: [{
+      name: startupContainerName, service: "db", state: "exited", exitCode: 1,
+      health: null, oomKilled: false,
+    }],
+  });
+  const serialized = JSON.stringify(diagnostic);
+  assert.equal(diagnostic.kind, "service_start_failure");
+  assert.ok(!serialized.includes(token));
+  assert.ok(!serialized.includes(connection));
+  assert.ok(!serialized.includes("token="));
+});
+
+test("partial startup cleanup runs after diagnostics, even when diagnostic collection throws", async () => {
+  const calls = [];
+  await assert.rejects(runSupabaseStartWithDiagnostics({
+    start: async () => {
+      calls.push("start");
+      const error = new Error("synthetic startup failure");
+      error.processResult = { code: 1, timedOut: false, outputTruncated: false };
+      throw error;
+    },
+    diagnose: async () => {
+      calls.push("diagnose");
+      throw new Error("diagnostic collection failed");
+    },
+    cleanup: async () => {
+      calls.push("cleanup");
+      return { kind: "stopped", exitStatus: 0, timedOut: false };
+    },
+  }), (error) => {
+    assert.equal(error.safeDiagnostic.kind, "startup_diagnostics_unavailable");
+    assert.deepEqual(error.safeDiagnostic.partialStartupCleanup, { kind: "stopped", exitStatus: 0, timedOut: false });
+    return true;
+  });
+  assert.deepEqual(calls, ["start", "diagnose", "cleanup"]);
+});
+
+test("the PostgreSQL runner captures startup diagnostics before cleanup and remains local-only", () => {
+  assert.match(postgresRunner, /runSupabaseStartWithDiagnostics/);
+  assert.match(postgresRunner, /docker', \[\s*'ps', '-a', '--filter', 'name=' \+ projectId/);
+  assert.match(postgresRunner, /'inspect', '--format'/);
+  assert.match(postgresRunner, /'info', '--format', '\{\{\.MemTotal\}\}\|\{\{\.NCPU\}\}\|\{\{\.DockerRootDir\}\}'/);
+  assert.match(postgresRunner, /diskPaths = \['-Pk', localRoot\]/);
+  assert.match(postgresRunner, /\['db', 'reset', '--local', '--no-seed'\]/);
+  assert.match(postgresRunner, /finally\s*\{[\s\S]*stackStartAttempted[\s\S]*temporary_workspace_cleanup/);
   assert.doesNotMatch(postgresRunner, /--linked/);
   assert.doesNotMatch(postgresRunner, /--db-url/);
 });

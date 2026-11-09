@@ -354,18 +354,28 @@ async function finalizePaypalOperation(
   actorId: string,
   outcome: "completed" | "unknown" | "rejected",
   invoice?: PaypalInvoice,
+  providerSnapshotIsAuthoritative = false,
 ) {
+  const reportedStatus = invoice ? providerInvoiceStatus(invoice) : null;
+  const paymentStates = new Set(["partially_paid", "paid", "paid_external", "partially_refunded", "refunded", "refunded_external"]);
+  const unverifiedPaymentState = reportedStatus !== null && paymentStates.has(reportedStatus) && !providerSnapshotIsAuthoritative;
+  const snapshot = unverifiedPaymentState ? undefined : invoice;
   return serviceClient.rpc("finalize_paypal_operation", {
     p_claim_id: claimId,
     p_actor_id: actorId,
-    p_outcome: outcome,
-    p_provider_invoice_id: invoice?.id ?? null,
-    p_provider_status: invoice?.status ?? null,
-    p_invoice_status: outcome === "completed" && invoice ? providerInvoiceStatus(invoice) : null,
-    p_invoice_url: invoice?.invoiceUrl ?? null,
-    p_paid_at: invoice?.paidAt ?? null,
-    p_observed_at: invoice ? new Date().toISOString() : null,
+    p_outcome: unverifiedPaymentState ? "unknown" : outcome,
+    p_provider_invoice_id: snapshot?.id ?? null,
+    p_provider_status: snapshot?.status ?? null,
+    p_invoice_status: snapshot ? providerInvoiceStatus(snapshot) : null,
+    p_invoice_url: snapshot?.invoiceUrl ?? null,
+    p_paid_at: snapshot?.paidAt ?? null,
+    p_observed_at: snapshot ? new Date().toISOString() : null,
+    p_provider_updated_at: snapshot?.providerUpdatedAt ?? null,
   });
+}
+
+function providerSnapshotWasRejected(result: unknown): boolean {
+  return isRecord(result) && result.snapshotRequired === true && result.snapshotApplied === false;
 }
 
 function stringHeader(value: string | string[] | undefined): string | null {
@@ -1523,8 +1533,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
         }
         if (providerInvoice) {
           const outcome = providerInvoiceStatus(providerInvoice) === "unknown" ? "unknown" : "completed";
-          const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, outcome, providerInvoice);
-          if (finalized.error) return reply.code(202).send({ invoice: toInvoiceRecord(invoiceRow), outcome: "unknown", message: "PayPal found an invoice, but its saved state could not be confirmed. Reconcile before retrying." });
+          const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, outcome, providerInvoice, true);
+          if (finalized.error || providerSnapshotWasRejected(finalized.data)) return reply.code(202).send({
+            invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : invoiceRow),
+            outcome: "unknown",
+            message: "PayPal found an invoice, but its snapshot was not accepted as current. Reconcile before retrying.",
+          });
           return reply.code(outcome === "unknown" ? 202 : 200).send({
             invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : null),
             outcome: outcome === "unknown" ? "unknown" : "reconciled",
@@ -1547,9 +1561,13 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 
     const createOutcome = providerInvoice.status.toUpperCase() === "DRAFT" ? "completed" : "unknown";
     const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, createOutcome, providerInvoice);
-    if (finalized.error) {
-      await finalizePaypalOperation(serviceClient, claim.id, context.userId, "unknown");
-      return reply.code(202).send({ invoice: toInvoiceRecord(invoiceRow), outcome: "unknown", message: "PayPal created an invoice, but the saved state could not be confirmed. Reconcile before retrying." });
+    if (finalized.error || providerSnapshotWasRejected(finalized.data)) {
+      if (finalized.error) await finalizePaypalOperation(serviceClient, claim.id, context.userId, "unknown");
+      return reply.code(202).send({
+        invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : invoiceRow),
+        outcome: "unknown",
+        message: "PayPal created an invoice, but its snapshot was not accepted as current. Reconcile before retrying.",
+      });
     }
     return reply.code(createOutcome === "unknown" ? 202 : 201).send({
       invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : null),
@@ -1608,8 +1626,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
         } catch { providerInvoice = null; }
         if (providerInvoice) {
           const outcome = providerInvoiceStatus(providerInvoice) === "unknown" ? "unknown" : "completed";
-          const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, outcome, providerInvoice);
-          if (finalized.error) return reply.code(202).send({ invoice: toInvoiceRecord(invoiceRow), outcome: "unknown", message: "PayPal found an invoice, but its saved state could not be confirmed. Reconcile before retrying." });
+          const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, outcome, providerInvoice, true);
+          if (finalized.error || providerSnapshotWasRejected(finalized.data)) return reply.code(202).send({
+            invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : invoiceRow),
+            outcome: "unknown",
+            message: "PayPal found an invoice, but its snapshot was not accepted as current. Reconcile before retrying.",
+          });
           return reply.code(outcome === "unknown" ? 202 : 200).send({
             invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : null),
             outcome: outcome === "unknown" ? "unknown" : "reconciled",
@@ -1627,9 +1649,13 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     }
     const createOutcome = providerInvoice.status.toUpperCase() === "DRAFT" ? "completed" : "unknown";
     const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, createOutcome, providerInvoice);
-    if (finalized.error) {
-      await finalizePaypalOperation(serviceClient, claim.id, context.userId, "unknown");
-      return reply.code(202).send({ invoice: toInvoiceRecord(invoiceRow), outcome: "unknown", message: "PayPal created an invoice, but the saved state could not be confirmed. Reconcile before retrying." });
+    if (finalized.error || providerSnapshotWasRejected(finalized.data)) {
+      if (finalized.error) await finalizePaypalOperation(serviceClient, claim.id, context.userId, "unknown");
+      return reply.code(202).send({
+        invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : invoiceRow),
+        outcome: "unknown",
+        message: "PayPal created an invoice, but its snapshot was not accepted as current. Reconcile before retrying.",
+      });
     }
     return reply.code(createOutcome === "unknown" ? 202 : 201).send({
       invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : null),
@@ -1668,19 +1694,38 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     }
 
     let providerInvoice: PaypalInvoice | null = null;
+    let providerInvoiceWasFetched = false;
     try {
       const sendResponse = await paypalClient.sendInvoice(invoiceRow.provider_invoice_id);
-      providerInvoice = await paypalClient.showInvoice(invoiceRow.provider_invoice_id).catch(() => sendResponse);
+      try {
+        providerInvoice = await paypalClient.showInvoice(invoiceRow.provider_invoice_id);
+        providerInvoiceWasFetched = true;
+      } catch {
+        providerInvoice = sendResponse;
+      }
       if (!providerInvoice) throw new PaypalWriteUnknownError();
       if (providerInvoice.status.toUpperCase() === "DRAFT") {
+        if (!providerInvoiceWasFetched) {
+          const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, "unknown");
+          return reply.code(202).send({
+            invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : invoiceRow),
+            outcome: "unknown",
+            message: "PayPal did not confirm the invoice state after the send request. Reconcile before retrying.",
+          });
+        }
         const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, "rejected", providerInvoice);
-        if (finalized.error) return reply.code(502).send({ error: "PayPal still reports a draft invoice, but the send claim could not be released safely." });
+        if (finalized.error || providerSnapshotWasRejected(finalized.data)) return reply.code(202).send({
+          invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : invoiceRow),
+          outcome: "unknown",
+          message: "PayPal still reports a draft, but its snapshot could not safely resolve the send operation.",
+        });
         return reply.code(409).send({ invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : null), error: "PayPal still reports this invoice as a draft. Review it before sending again." });
       }
     } catch (cause) {
       if (cause instanceof PaypalWriteUnknownError) {
         try {
           providerInvoice = await paypalClient.showInvoice(invoiceRow.provider_invoice_id);
+          providerInvoiceWasFetched = true;
         } catch {
           providerInvoice = null;
         }
@@ -1694,7 +1739,11 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
         }
         if (providerInvoice.status.toUpperCase() === "DRAFT") {
           const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, "rejected", providerInvoice);
-          if (finalized.error) return reply.code(502).send({ error: "The draft state was found, but the send claim could not be released safely." });
+          if (finalized.error || providerSnapshotWasRejected(finalized.data)) return reply.code(202).send({
+            invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : invoiceRow),
+            outcome: "unknown",
+            message: "PayPal still reports a draft, but its snapshot could not safely resolve the send operation.",
+          });
           return reply.code(409).send({ invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : null), error: "PayPal still reports this invoice as a draft. Review it before sending again." });
         }
       } else {
@@ -1705,11 +1754,18 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
         return reply.code(safe.status).send({ error: safe.message });
       }
     }
-    const sendOutcome = providerInvoice && providerInvoiceStatus(providerInvoice) === "unknown" ? "unknown" : "completed";
-    const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, sendOutcome, providerInvoice ?? undefined);
-    if (finalized.error) {
-      await finalizePaypalOperation(serviceClient, claim.id, context.userId, "unknown");
-      return reply.code(202).send({ invoice: toInvoiceRecord(invoiceRow), outcome: "unknown", message: "PayPal accepted the send request, but the saved state could not be confirmed. Reconcile before retrying." });
+    const sendStatus = providerInvoice ? providerInvoiceStatus(providerInvoice) : "unknown";
+    const sendOutcome = sendStatus === "unknown" || (!providerInvoiceWasFetched && sendStatus !== "sent") ? "unknown" : "completed";
+    const finalized = await finalizePaypalOperation(
+      serviceClient, claim.id, context.userId, sendOutcome, providerInvoice ?? undefined, providerInvoiceWasFetched,
+    );
+    if (finalized.error || providerSnapshotWasRejected(finalized.data)) {
+      if (finalized.error) await finalizePaypalOperation(serviceClient, claim.id, context.userId, "unknown");
+      return reply.code(202).send({
+        invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : invoiceRow),
+        outcome: "unknown",
+        message: "PayPal accepted the send request, but its snapshot was not accepted as current. Reconcile before retrying.",
+      });
     }
     return reply.code(sendOutcome === "unknown" ? 202 : 200).send({
       invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : null),
@@ -1749,8 +1805,17 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
           p_invoice_url: current.invoiceUrl,
           p_paid_at: current.paidAt,
           p_observed_at: new Date().toISOString(),
+          p_provider_updated_at: current.providerUpdatedAt ?? null,
         });
         if (recorded.error) return rpcFailure(reply, recorded.error);
+        if (providerSnapshotWasRejected(recorded.data)) {
+          const staleInvoice = isRecord(recorded.data) && isRecord(recorded.data.invoice) ? recorded.data.invoice : invoiceRow;
+          return reply.code(202).send({
+            invoice: toInvoiceRecord(staleInvoice),
+            outcome: "unknown",
+            message: "PayPal returned a snapshot that conflicts with the current invoice version. The saved state was preserved.",
+          });
+        }
         const refreshed = isRecord(recorded.data) && isRecord(recorded.data.invoice) ? recorded.data.invoice : invoiceRow;
         const stillUnknown = isRecord(refreshed) && refreshed.status === "unknown";
         return reply.code(stillUnknown ? 202 : 200).send({
@@ -1786,8 +1851,12 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     if (!claim || typeof claim.id !== "string") {
       return reply.code(202).send({ invoice: toInvoiceRecord(invoiceRow), outcome: "unknown", message: "No active PayPal operation was available to reconcile." });
     }
-    const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, outcome, providerInvoice ?? undefined);
-    if (finalized.error) return reply.code(202).send({ invoice: toInvoiceRecord(invoiceRow), outcome: "unknown", message: "PayPal was checked, but the result could not be saved." });
+    const finalized = await finalizePaypalOperation(serviceClient, claim.id, context.userId, outcome, providerInvoice ?? undefined, Boolean(providerInvoice));
+    if (finalized.error || providerSnapshotWasRejected(finalized.data)) return reply.code(202).send({
+      invoice: toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : invoiceRow),
+      outcome: "unknown",
+      message: "PayPal was checked, but its snapshot could not safely resolve the operation. Reconcile again before retrying.",
+    });
     const savedInvoice = toInvoiceRecord(isRecord(finalized.data) ? finalized.data.invoice : invoiceRow);
     return reply.code(outcome === "unknown" ? 202 : 200).send({
       invoice: savedInvoice,

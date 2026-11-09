@@ -22,13 +22,19 @@ function claimedEvent(leaseToken = firstLease, attemptCount = 1) {
 
 function makeWorker(
   rpc: (name: string, args?: Record<string, unknown>) => Promise<{ data: unknown; error: unknown | null }>,
-  showInvoice: (id: string) => Promise<{ id: string; status: string; invoiceUrl: string | null; paidAt: string | null }>,
+  showInvoice: (id: string) => Promise<{ id: string; status: string; invoiceUrl: string | null; paidAt: string | null; providerUpdatedAt?: string | null }>,
   options?: PaypalWebhookWorkerOptions,
 ) {
   const logger = { info: vi.fn(), warn: vi.fn() };
-  const service = { rpc: vi.fn(rpc) } as unknown as Pick<SupabasePort, "rpc">;
-  const paypal = { showInvoice: vi.fn(showInvoice) } as unknown as Pick<PaypalClient, "showInvoice">;
-  return { worker: new PaypalWebhookWorker(service, paypal, logger, options), service, paypal, logger };
+  const service = { rpc: vi.fn(rpc) };
+  const paypal = { showInvoice: vi.fn(showInvoice) };
+  const worker = new PaypalWebhookWorker(
+    service as unknown as Pick<SupabasePort, "rpc">,
+    paypal as unknown as Pick<PaypalClient, "showInvoice">,
+    logger,
+    options,
+  );
+  return { worker, service, paypal, logger };
 }
 
 describe("durable PayPal webhook worker", () => {
@@ -82,6 +88,23 @@ describe("durable PayPal webhook worker", () => {
     expect(durableQueue).toHaveLength(0);
   });
 
+  it("allows Cron recovery to cap each pass to one durable event", async () => {
+    let claims = 0;
+    const { worker, service, paypal } = makeWorker(async (name) => {
+      if (name === "claim_paypal_webhook_event") {
+        claims += 1;
+        return { data: claims <= 2 ? claimedEvent() : null, error: null };
+      }
+      return { data: { duplicate: false, matched: true, applied: true, status: "paid" }, error: null };
+    }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: null }), { maxEventsPerPass: 1 });
+
+    const result = await worker.processAvailable();
+
+    expect(result).toEqual({ processed: 1, batchLimitReached: true });
+    expect(claims).toBe(1);
+    expect(paypal.showInvoice).toHaveBeenCalledOnce();
+    expect(service.rpc).toHaveBeenCalledTimes(2);
+  });
   it("backs off idle polling by 1, 2, 4, 8, and 15 seconds, capped at 15 seconds", async () => {
     vi.useFakeTimers();
     const { worker, service } = makeWorker(async () => ({ data: null, error: null }), async (id) => ({
@@ -264,9 +287,90 @@ describe("durable PayPal webhook worker", () => {
       p_provider_status: "PAID",
       p_paid_at: "2026-11-02T12:00:00Z",
       p_observed_at: expect.any(String),
+      p_provider_updated_at: null,
     }));
     const completionArgs = vi.mocked(service.rpc).mock.calls.find(([name]) => name === "complete_verified_paypal_webhook")?.[1];
     expect(completionArgs).not.toHaveProperty("p_invoice_status");
+  });
+
+  it("prevents an older paid provider response from overwriting a newer refunded response", async () => {
+    const olderEvent = {
+      ...claimedEvent(),
+      event_id: "00000000-0000-4000-8000-000000000101",
+      provider_event_id: "WH-OLDER-PAID",
+    };
+    const newerEvent = {
+      ...claimedEvent(secondLease),
+      event_id: "00000000-0000-4000-8000-000000000102",
+      provider_event_id: "WH-NEWER-REFUNDED",
+    };
+    const pendingEvents = [olderEvent, newerEvent];
+    const invoiceState = {
+      status: "sent" as string,
+      providerUpdatedAt: null as string | null,
+    };
+    const rpc = async (name: string, args?: Record<string, unknown>) => {
+      if (name === "claim_paypal_webhook_event") return { data: pendingEvents.shift() ?? null, error: null };
+      if (name === "complete_verified_paypal_webhook") {
+        const incomingVersion = typeof args?.p_provider_updated_at === "string" ? args.p_provider_updated_at : null;
+        const incomingStatus = args?.p_provider_status === "REFUNDED" ? "refunded" : "paid";
+        const versionIsCurrent = incomingVersion !== null
+          ? invoiceState.providerUpdatedAt === null || incomingVersion >= invoiceState.providerUpdatedAt
+          : invoiceState.providerUpdatedAt === null;
+        const transitionIsAllowed = invoiceState.status !== "refunded" || incomingStatus === "refunded";
+        const applied = versionIsCurrent && transitionIsAllowed;
+        if (applied) {
+          invoiceState.status = incomingStatus;
+          invoiceState.providerUpdatedAt = incomingVersion;
+        }
+        return { data: { duplicate: false, matched: true, applied, status: invoiceState.status }, error: null };
+      }
+      return { data: null, error: null };
+    };
+
+    let releaseOldRead: ((snapshot: { id: string; status: string; invoiceUrl: null; paidAt: string | null; providerUpdatedAt: string }) => void) | undefined;
+    let signalOldReadStarted: (() => void) | undefined;
+    const oldReadStarted = new Promise<void>((resolve) => { signalOldReadStarted = resolve; });
+    const oldProviderRead = new Promise<{ id: string; status: string; invoiceUrl: null; paidAt: string | null; providerUpdatedAt: string }>((resolve) => {
+      releaseOldRead = resolve;
+    });
+    const olderWorker = makeWorker(rpc, async () => {
+      signalOldReadStarted?.();
+      return oldProviderRead;
+    });
+    const olderPass = olderWorker.worker.processAvailable();
+    await oldReadStarted;
+
+    const newerWorker = makeWorker(rpc, async (id) => ({
+      id,
+      status: "REFUNDED",
+      invoiceUrl: null,
+      paidAt: null,
+      providerUpdatedAt: "2026-11-07T12:00:00.000Z",
+    }));
+    await newerWorker.worker.processAvailable();
+    releaseOldRead?.({
+      id: providerInvoiceId,
+      status: "PAID",
+      invoiceUrl: null,
+      paidAt: "2026-11-07T11:00:00.000Z",
+      providerUpdatedAt: "2026-11-07T11:00:00.000Z",
+    });
+    await olderPass;
+
+    expect(invoiceState).toEqual({
+      status: "refunded",
+      providerUpdatedAt: "2026-11-07T12:00:00.000Z",
+    });
+    expect(olderWorker.service.rpc).toHaveBeenCalledWith("complete_verified_paypal_webhook", expect.objectContaining({
+      p_provider_status: "PAID",
+      p_provider_updated_at: "2026-11-07T11:00:00.000Z",
+      p_observed_at: expect.any(String),
+    }));
+    expect(olderWorker.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: "snapshot_not_applied" }),
+      expect.any(String),
+    );
   });
 
   it("does not start concurrent duplicate worker passes in the same process", async () => {
@@ -447,6 +551,7 @@ describe("durable PayPal webhook worker", () => {
       p_invoice_url: null,
       p_paid_at: null,
       p_observed_at: null,
+      p_provider_updated_at: null,
     });
     expect(service.rpc).not.toHaveBeenCalledWith("retry_paypal_webhook_event", expect.anything());
   });
@@ -468,12 +573,22 @@ describe("durable PayPal webhook worker", () => {
     let claimed = false;
     const { worker, logger } = makeWorker(async (name) => {
       if (name === "claim_paypal_webhook_event") return { data: claimed ? null : (claimed = true, claimedEvent()), error: null };
-      return { data: { duplicate: false, matched: true, applied: false, status: "paid" }, error: null };
+      return { data: {
+        duplicate: false,
+        matched: true,
+        applied: false,
+        snapshotApplied: false,
+        snapshotRejectionReason: "stale_provider_version",
+        status: "paid",
+      }, error: null };
     }, async (id) => ({ id, status: "PAID", invoiceUrl: null, paidAt: null }));
 
     await worker.processAvailable();
 
-    expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({ stage: "snapshot_not_applied" }), expect.any(String));
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ stage: "snapshot_not_applied", errorCode: "stale_provider_version" }),
+      expect.any(String),
+    );
     expect(logger.info.mock.calls.some(([fields]) => (fields as Record<string, unknown>).stage === "completed")).toBe(false);
   });
 

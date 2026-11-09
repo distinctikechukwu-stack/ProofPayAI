@@ -1,0 +1,5 @@
+# Safe placeholder template only. Do not put real values here or commit a populated .dev.vars file.
+PAYPAL_SANDBOX_CLIENT_ID="your-sandbox-client-id"
+PAYPAL_SANDBOX_CLIENT_SECRET="your-sandbox-client-secret"
+PAYPAL_WEBHOOK_ID="your-sandbox-webhook-id"
+SUPABASE_SERVICE_ROLE_KEY="your-staging-service-role-key"

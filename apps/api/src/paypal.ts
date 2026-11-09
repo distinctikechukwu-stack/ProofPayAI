@@ -1,5 +1,5 @@
+import { Buffer } from "node:buffer";
 import { z } from "zod";
-import { isDeepStrictEqual } from "node:util";
 
 export const PAYPAL_SANDBOX_BASE_URL = "https://api-m.sandbox.paypal.com";
 const PAYPAL_REQUEST_TIMEOUT_MS = 15_000;
@@ -27,7 +27,13 @@ const paypalErrorSchema = z.object({
 const invoiceResponseSchema = z.object({
   id: z.string().min(1).optional(),
   status: z.string().min(1).optional(),
-  detail: z.object({ invoice_number: z.string().optional() }).passthrough().optional(),
+  detail: z.object({
+    invoice_number: z.string().optional(),
+    metadata: z.object({
+      last_update_time: z.string().optional(),
+      update_time: z.string().optional(),
+    }).passthrough().optional(),
+  }).passthrough().optional(),
   invoice_number: z.string().optional(),
   due_date: z.string().optional(),
   payment_date: z.string().optional(),
@@ -56,6 +62,7 @@ export interface PaypalInvoice {
   invoiceNumber: string | null;
   invoiceUrl: string | null;
   paidAt: string | null;
+  providerUpdatedAt: string | null;
 }
 
 export class PaypalApiError extends Error {
@@ -117,7 +124,40 @@ function invoiceFromProvider(value: unknown): PaypalInvoice {
     invoiceNumber: invoice.detail?.invoice_number ?? invoice.invoice_number ?? null,
     invoiceUrl: payerLink?.href?.startsWith("https://") ? payerLink.href : null,
     paidAt: invoice.payment_date ?? null,
+    providerUpdatedAt: parseProviderUpdatedAt(invoice.detail?.metadata?.last_update_time ?? invoice.detail?.metadata?.update_time),
   };
+}
+
+function parseProviderUpdatedAt(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  if (!z.string().datetime({ offset: true }).safeParse(value).success) {
+    throw new Error("PayPal returned a malformed invoice update timestamp.");
+  }
+  const dateParts = value.slice(0, 10).split("-").map(Number);
+  const datePart = dateParts[0] ?? 0;
+  const monthPart = dateParts[1] ?? 0;
+  const dayPart = dateParts[2] ?? 0;
+  const daysByMonth = [31, (datePart % 4 === 0 && (datePart % 100 !== 0 || datePart % 400 === 0)) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (!datePart || !monthPart || !dayPart || dayPart > (daysByMonth[monthPart - 1] ?? 0)) {
+    throw new Error("PayPal returned a malformed invoice update timestamp.");
+  }
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds)) throw new Error("PayPal returned a malformed invoice update timestamp.");
+  return new Date(milliseconds).toISOString();
+}
+
+function canonicalizeJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeJsonValue);
+  if (typeof value !== "object" || value === null) return value;
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => [key, canonicalizeJsonValue(record[key])]));
+}
+
+function sameJsonValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalizeJsonValue(left)) === JSON.stringify(canonicalizeJsonValue(right));
 }
 
 function safeProviderMessage(value: unknown): { message: string; debugId: string | null; details: string[] } {
@@ -261,7 +301,7 @@ export class PaypalClient {
     } catch {
       throw new PaypalReadError();
     }
-    if (!isDeepStrictEqual(rawEvent, event)) throw new PaypalReadError();
+    if (!sameJsonValue(rawEvent, event)) throw new PaypalReadError();
     const response = await this.request("/v1/notifications/verify-webhook-signature", {
       method: "POST",
       serializedBody: `${JSON.stringify({

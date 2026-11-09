@@ -58,3 +58,8 @@ scripts/verify-paypal-invoice-preflight.ps1
 scripts/windows-credential-bridge.mjs
 scripts/windows-credential-bridge.test.mjs
 scripts/windows-credential-store.contract.test.mjs
+
+# Cloudflare local-only secrets
+.dev.vars
+.dev.vars.*
+!.dev.vars.example

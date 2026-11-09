@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "types": [
+      "node",
+      "vitest/globals"
+    ]
+  },
+  "include": [
+    "src/**/*.ts",
+    "test/paypal.test.ts",
+    "test/paypal-webhook-worker.test.ts",
+    "test/cloudflare-paypal-webhook.test.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
+}

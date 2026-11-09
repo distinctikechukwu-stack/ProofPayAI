@@ -96,6 +96,8 @@ function analyticsFactory() {
     invoices: [
       { id: "invoice-1", project_id: "project-1", provider_invoice_number: "PP-1", status: "paid", amount_minor: "25000", currency: "USD", created_at: "2026-10-25T12:00:00Z", paid_at: "2026-10-27T12:00:00Z" },
       { id: "invoice-2", project_id: "project-1", provider_invoice_number: "PP-2", status: "sent", amount_minor: "35000", currency: "USD", created_at: "2026-10-28T12:00:00Z", paid_at: null },
+      { id: "invoice-3", project_id: "project-1", provider_invoice_number: "PP-3", status: "refunded", amount_minor: "15000", currency: "USD", created_at: "2026-10-29T12:00:00Z", paid_at: "2026-10-30T12:00:00Z" },
+      { id: "invoice-4", project_id: "project-1", provider_invoice_number: "PP-4", status: "partially_refunded", amount_minor: "12000", currency: "USD", created_at: "2026-10-30T12:00:00Z", paid_at: "2026-10-31T12:00:00Z" },
     ],
   };
   const getUser = vi.fn(async () => ({ data: { user: { id: "user-1" } }, error: null }));
@@ -345,13 +347,15 @@ describe("authenticated project API", () => {
         activeProjectCount: 1,
         milestoneCount: 2,
         approvedMilestoneCount: 1,
-        invoiceCount: 2,
+        invoiceCount: 4,
         paidInvoiceCount: 1,
         paidTotals: [{ currency: "USD", amountMinor: "25000" }],
       },
       invoices: [
         { id: "invoice-1", projectTitle: "Northstar website", status: "paid", amountMinor: "25000" },
         { id: "invoice-2", projectTitle: "Northstar website", status: "sent", amountMinor: "35000" },
+        { id: "invoice-3", projectTitle: "Northstar website", status: "refunded", amountMinor: "15000" },
+        { id: "invoice-4", projectTitle: "Northstar website", status: "partially_refunded", amountMinor: "12000" },
       ],
     });
   });

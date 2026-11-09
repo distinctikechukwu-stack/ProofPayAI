@@ -99,13 +99,13 @@ function appFixture(args: {
     supabaseAnonKey: "public-anon-key",
     createSupabaseClient: () => requestClient,
     createAuditSupabaseClient: () => serviceClient,
-    paypalWebhookEnqueueTimeoutMs: args.paypalWebhookEnqueueTimeoutMs,
-    onPaypalWebhookPending: args.onPaypalWebhookPending,
+    ...(args.paypalWebhookEnqueueTimeoutMs === undefined ? {} : { paypalWebhookEnqueueTimeoutMs: args.paypalWebhookEnqueueTimeoutMs }),
+    ...(args.onPaypalWebhookPending === undefined ? {} : { onPaypalWebhookPending: args.onPaypalWebhookPending }),
     paypal: {
       clientId: "sandbox-client-id",
       clientSecret: "sandbox-client-secret",
       ...(args.webhookId === null ? {} : { webhookId: args.webhookId ?? "sandbox-webhook-id" }),
-      webhookVerificationTimeoutMs: args.paypalWebhookVerificationTimeoutMs,
+      ...(args.paypalWebhookVerificationTimeoutMs === undefined ? {} : { webhookVerificationTimeoutMs: args.paypalWebhookVerificationTimeoutMs }),
       fetch: args.fetch,
     },
   });
@@ -118,6 +118,70 @@ describe("PayPal Sandbox REST boundary", () => {
   afterEach(async () => {
     await app?.close();
     app = undefined;
+  });
+
+  it("uses detail.metadata.last_update_time as the provider-maintained invoice version", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse(providerInvoice({
+        detail: { invoice_number: invoiceNumber, metadata: {
+          last_update_time: "2026-11-07T11:30:45.123+02:00",
+          update_time: "2026-11-07T10:00:00Z",
+        } },
+      })));
+    const client = new PaypalClient({ clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", fetch });
+
+    await expect(client.showInvoice("PAYPAL-INV-1")).resolves.toMatchObject({
+      providerUpdatedAt: "2026-11-07T09:30:45.123Z",
+    });
+  });
+
+  it("uses detail.metadata.update_time only when the canonical timestamp is absent", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse(providerInvoice({ detail: { invoice_number: invoiceNumber, metadata: { update_time: "2026-11-07T10:00:00Z" } } })));
+    const client = new PaypalClient({ clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", fetch });
+
+    await expect(client.showInvoice("PAYPAL-INV-1")).resolves.toMatchObject({
+      providerUpdatedAt: "2026-11-07T10:00:00.000Z",
+    });
+  });
+
+  it("rejects a malformed canonical provider version instead of falling back or using local time", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse(providerInvoice({
+        detail: { invoice_number: invoiceNumber, metadata: {
+          last_update_time: "2026-02-31T10:00:00Z",
+          update_time: "2026-11-07T10:00:00Z",
+        } },
+      })));
+    const client = new PaypalClient({ clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", fetch });
+
+    await expect(client.showInvoice("PAYPAL-INV-1")).rejects.toThrow("malformed invoice update timestamp");
+  });
+
+  it("ignores root-level metadata so a legacy fixture cannot masquerade as PayPal's response version", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse(providerInvoice({
+        metadata: { last_update_time: "2026-11-07T11:30:45Z" },
+      })));
+    const client = new PaypalClient({ clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", fetch });
+
+    await expect(client.showInvoice("PAYPAL-INV-1")).resolves.toMatchObject({ providerUpdatedAt: null });
+  });
+
+  it.each([
+    { label: "missing detail", detail: undefined },
+    { label: "missing detail metadata", detail: { invoice_number: invoiceNumber } },
+  ])("leaves providerUpdatedAt absent when $label", async ({ detail }) => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse(providerInvoice({ detail })));
+    const client = new PaypalClient({ clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", fetch });
+
+    await expect(client.showInvoice("PAYPAL-INV-1")).resolves.toMatchObject({ providerUpdatedAt: null });
   });
 
   it.each([invoiceWriteScope, generalInvoiceScope, fullInvoiceScope])("accepts the documented invoice write scope %s", async (scope) => {
@@ -167,7 +231,9 @@ describe("PayPal Sandbox REST boundary", () => {
     const fetch = clientFetch(async (url, init) => {
       requests.push({ url, init });
       if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse("sandbox-token");
-      return jsonResponse(providerInvoice(), 201);
+      return jsonResponse(providerInvoice({
+        detail: { invoice_number: invoiceNumber, metadata: { last_update_time: "2026-11-07T11:30:45.123Z" } },
+      }), 201);
     });
     const client = new PaypalClient({ clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", webhookId: "sandbox-webhook-id", fetch });
 
@@ -307,7 +373,9 @@ describe("PayPal Sandbox REST boundary", () => {
       events.push(`provider:${url}`);
       if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse("sandbox-token");
       invoicePayloads.push(JSON.parse(String(init?.body)));
-      return jsonResponse(providerInvoice(), 201);
+      return jsonResponse(providerInvoice({
+        detail: { invoice_number: invoiceNumber, metadata: { last_update_time: "2026-11-07T11:30:45.123Z" } },
+      }), 201);
     });
     const { appPromise, serviceRpc } = appFixture({
       fetch,
@@ -339,7 +407,11 @@ describe("PayPal Sandbox REST boundary", () => {
     expect(events[0]).toBe("database:begin_paypal_invoice_create");
     expect(events[1]).toBe("provider:https://api-m.sandbox.paypal.com/v1/oauth2/token");
     expect(serviceRpc).toHaveBeenCalledWith("begin_paypal_invoice_create", expect.objectContaining({ p_actor_id: actorId, p_milestone_id: milestoneId }));
-    expect(serviceRpc).toHaveBeenCalledWith("finalize_paypal_operation", expect.objectContaining({ p_outcome: "completed", p_provider_invoice_id: "PAYPAL-INV-1" }));
+    expect(serviceRpc).toHaveBeenCalledWith("finalize_paypal_operation", expect.objectContaining({
+      p_outcome: "completed",
+      p_provider_invoice_id: "PAYPAL-INV-1",
+      p_provider_updated_at: "2026-11-07T11:30:45.123Z",
+    }));
     expect(invoicePayloads).toHaveLength(1);
     expect(invoicePayloads[0]).toMatchObject({ primary_recipients: [{ billing_info: { email_address: "release-test-user-002@example.invalid" } }] });
     expect(JSON.stringify(invoicePayloads[0])).not.toContain("release-test-user-003@example.invalid");
@@ -355,6 +427,41 @@ describe("PayPal Sandbox REST boundary", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("reports a current provider snapshot conflict as unknown instead of claiming invoice creation succeeded", async () => {
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse(providerInvoice(), 201));
+    const { appPromise, serviceRpc } = appFixture({
+      fetch,
+      serviceRpc: async (name) => {
+        if (name === "begin_paypal_invoice_create") return { data: {
+          claimed: true, invoice: claimedInvoice, claim: { id: claimId, state: "claimed" },
+          clientEmail: "release-test-user-002@example.invalid", milestoneTitle: "Discovery",
+        }, error: null };
+        if (name === "finalize_paypal_operation") return { data: {
+          invoice: persistedDraft,
+          claimState: "unknown",
+          snapshotRequired: true,
+          snapshotApplied: false,
+          snapshotRejectionReason: "stale_provider_version",
+        }, error: null };
+        return { data: null, error: null };
+      },
+    });
+    app = await appPromise;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/invoices/milestones/${milestoneId}/create`,
+      headers: { authorization: "Bearer user-access-token" },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ outcome: "unknown", invoice: { status: "draft" } });
+    expect(response.json().message).toContain("not accepted as current");
+    expect(serviceRpc).toHaveBeenCalledTimes(2);
+  });
+
   it("commits a separate send claim before sending and persists PayPal's current invoice state", async () => {
     const events: string[] = [];
     const fetch = clientFetch(async (url, init) => {
@@ -364,7 +471,10 @@ describe("PayPal Sandbox REST boundary", () => {
         expect(init?.body).toBe(JSON.stringify({ send_to_recipient: true }));
         return new Response(null, { status: 202 });
       }
-      return jsonResponse(providerInvoice({ status: "SENT" }));
+      return jsonResponse(providerInvoice({
+        status: "SENT",
+        detail: { invoice_number: invoiceNumber, metadata: { last_update_time: "2026-11-07T11:30:45.123Z" } },
+      }));
     });
     const { appPromise, serviceRpc } = appFixture({
       fetch,
@@ -386,7 +496,120 @@ describe("PayPal Sandbox REST boundary", () => {
     expect(events[0]).toBe("database:begin_paypal_invoice_send");
     expect(events[1]).toBe("provider:https://api-m.sandbox.paypal.com/v1/oauth2/token");
     expect(serviceRpc).toHaveBeenCalledWith("begin_paypal_invoice_send", expect.objectContaining({ p_invoice_id: invoiceId, p_actor_id: actorId }));
-    expect(serviceRpc).toHaveBeenCalledWith("finalize_paypal_operation", expect.objectContaining({ p_outcome: "completed", p_provider_status: "SENT" }));
+    expect(serviceRpc).toHaveBeenCalledWith("finalize_paypal_operation", expect.objectContaining({
+      p_outcome: "completed",
+      p_provider_status: "SENT",
+      p_provider_updated_at: "2026-11-07T11:30:45.123Z",
+    }));
+  });
+
+  it("does not trust a payment status in a send response when the authoritative invoice read fails", async () => {
+    const fetch = clientFetch(async (url) => {
+      if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse();
+      if (url.endsWith("/v2/invoicing/invoices/PAYPAL-INV-1/send")) {
+        return jsonResponse(providerInvoice({ status: "PAID" }), 202);
+      }
+      throw new TypeError("temporary invoice read outage");
+    });
+    const { appPromise, serviceRpc } = appFixture({
+      fetch,
+      serviceRpc: async (name, values) => {
+        if (name === "begin_paypal_invoice_send") return { data: {
+          claimed: true, invoice: pendingSendInvoice, claim: { id: claimId, state: "claimed" },
+        }, error: null };
+        if (name === "finalize_paypal_operation") return { data: {
+          invoice: { ...pendingSendInvoice, status: "unknown" },
+          claimState: values?.p_outcome,
+        }, error: null };
+        return { data: null, error: null };
+      },
+    });
+    app = await appPromise;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/invoices/${invoiceId}/send`,
+      headers: { authorization: "Bearer user-access-token" },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ outcome: "unknown", invoice: { status: "unknown" } });
+    expect(serviceRpc).toHaveBeenCalledWith("finalize_paypal_operation", expect.objectContaining({
+      p_outcome: "unknown",
+      p_provider_invoice_id: null,
+      p_provider_status: null,
+      p_invoice_status: null,
+      p_provider_updated_at: null,
+    }));
+  });
+
+  it("passes PayPal's provider timestamp to the direct reconciliation RPC", async () => {
+    const unresolved = { ...claimedInvoice, provider_invoice_id: "PAYPAL-INV-1", status: "unknown", provider_status: "FUTURE_STATE" };
+    const recorded = { ...unresolved, status: "paid", provider_status: "PAID" };
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse(providerInvoice({
+        status: "PAID",
+        detail: { invoice_number: invoiceNumber, metadata: { last_update_time: "2026-11-07T11:30:45.123Z" } },
+      })));
+    const { appPromise, serviceRpc } = appFixture({
+      fetch,
+      serviceRpc: async (name) => {
+        if (name === "get_paypal_invoice_reconciliation") return { data: { invoice: unresolved, createClaim: null, sendClaim: null }, error: null };
+        if (name === "record_paypal_invoice_state") return { data: { invoice: recorded, snapshotRequired: true, snapshotApplied: true }, error: null };
+        return { data: null, error: null };
+      },
+    });
+    app = await appPromise;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/invoices/${invoiceId}/reconcile`,
+      headers: { authorization: "Bearer user-access-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ outcome: "reconciled", invoice: { status: "paid" } });
+    expect(serviceRpc).toHaveBeenCalledWith("record_paypal_invoice_state", expect.objectContaining({
+      p_provider_status: "PAID",
+      p_invoice_status: "paid",
+      p_provider_updated_at: "2026-11-07T11:30:45.123Z",
+    }));
+  });
+
+  it("does not report reconciliation success when the RPC rejects an old provider version", async () => {
+    const unresolved = { ...claimedInvoice, provider_invoice_id: "PAYPAL-INV-1", status: "unknown", provider_status: "FUTURE_STATE" };
+    const preserved = { ...unresolved, status: "refunded", provider_status: "REFUNDED" };
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse(providerInvoice({
+        status: "PAID",
+        detail: { invoice_number: invoiceNumber, metadata: { last_update_time: "2026-11-07T11:30:45.123Z" } },
+      })));
+    const { appPromise } = appFixture({
+      fetch,
+      serviceRpc: async (name) => {
+        if (name === "get_paypal_invoice_reconciliation") return { data: { invoice: unresolved, createClaim: null, sendClaim: null }, error: null };
+        if (name === "record_paypal_invoice_state") return { data: {
+          invoice: preserved,
+          snapshotRequired: true,
+          snapshotApplied: false,
+          snapshotRejectionReason: "stale_provider_version",
+        }, error: null };
+        return { data: null, error: null };
+      },
+    });
+    app = await appPromise;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/invoices/${invoiceId}/reconcile`,
+      headers: { authorization: "Bearer user-access-token" },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ outcome: "unknown", invoice: { status: "refunded" } });
+    expect(response.json().message).toContain("conflicts with the current invoice version");
   });
 
   it("re-reads a send timeout and completes the claim when PayPal reports SENT", async () => {

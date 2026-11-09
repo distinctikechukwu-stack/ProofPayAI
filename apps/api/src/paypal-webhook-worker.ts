@@ -31,6 +31,8 @@ const completionReceiptSchema = z.object({
   duplicate: z.boolean(),
   matched: z.boolean(),
   applied: z.boolean().optional(),
+  snapshotApplied: z.boolean().optional(),
+  snapshotRejectionReason: z.string().max(80).nullable().optional(),
   status: z.string().nullable().optional(),
 }).passthrough();
 
@@ -42,6 +44,7 @@ type WorkerLogger = {
 };
 export interface PaypalWebhookWorkerOptions {
   rpcTimeoutMs?: number;
+  maxEventsPerPass?: number;
 }
 
 export class PaypalWebhookWorker {
@@ -137,7 +140,11 @@ export class PaypalWebhookWorker {
 
   private async processLoop(): Promise<QueuePassResult> {
     let processed = 0;
-    for (let count = 0; count < MAX_EVENTS_PER_TICK && !this.stopping; count += 1) {
+    const configuredLimit = this.options.maxEventsPerPass;
+    const eventLimit = configuredLimit !== undefined && Number.isInteger(configuredLimit) && configuredLimit > 0
+      ? Math.min(configuredLimit, MAX_EVENTS_PER_TICK)
+      : MAX_EVENTS_PER_TICK;
+    for (let count = 0; count < eventLimit && !this.stopping; count += 1) {
       let claimResult: { data: unknown; error: unknown | null };
       try {
         claimResult = await this.withRpcTimeout(this.serviceClient.rpc("claim_paypal_webhook_event"));
@@ -158,7 +165,7 @@ export class PaypalWebhookWorker {
       processed += 1;
       await this.processClaim(parsed.data);
     }
-    return { processed, batchLimitReached: processed === MAX_EVENTS_PER_TICK };
+    return { processed, batchLimitReached: processed === eventLimit };
   }
 
   private scheduleNextPoll(pass: QueuePassResult): void {
@@ -236,6 +243,7 @@ export class PaypalWebhookWorker {
         p_invoice_url: providerInvoice.invoiceUrl,
         p_paid_at: providerInvoice.paidAt,
         p_observed_at: new Date().toISOString(),
+        p_provider_updated_at: providerInvoice.providerUpdatedAt ?? null,
       }));
     } catch {
       await this.fail(event, "database_timeout", false);
@@ -260,7 +268,12 @@ export class PaypalWebhookWorker {
       return;
     }
     if (!receipt.data.applied) {
-      this.logger.info({ workerId: this.workerId, eventType: event.event_type, stage: "snapshot_not_applied" }, "The local invoice already had a newer provider snapshot; the older webhook snapshot was not applied");
+      this.logger.info({
+        workerId: this.workerId,
+        eventType: event.event_type,
+        stage: "snapshot_not_applied",
+        errorCode: receipt.data.snapshotRejectionReason ?? "snapshot_not_current",
+      }, "The verified provider snapshot was not applied; the existing invoice state was preserved");
       return;
     }
     this.logger.info({ workerId: this.workerId, eventType: event.event_type, stage: "completed" }, "Verified PayPal webhook event reconciled from the current provider invoice");
@@ -276,6 +289,7 @@ export class PaypalWebhookWorker {
         p_invoice_url: null,
         p_paid_at: null,
         p_observed_at: null,
+        p_provider_updated_at: null,
       }));
       if (result.error) await this.fail(event, "database_completion_failed", false);
       else {

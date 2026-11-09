@@ -1,0 +1,71 @@
+name: Cloudflare PayPal webhook local validation
+
+on:
+  push:
+    branches:
+      - codex/cloudflare-paypal-webhooks
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-paypal-webhook-local-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/codex/cloudflare-paypal-webhooks'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out only the selected webhook branch
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
+
+      - name: Set up the repository Node.js version
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: Install the locked workspace and pinned Supabase CLI
+        run: npm ci --include=dev
+
+      - name: Check disk headroom before local Supabase image pulls
+        shell: bash
+        run: |
+          set -euo pipefail
+          minimum_free_kib=$((6 * 1024 * 1024))
+          for path in "$RUNNER_TEMP" "$GITHUB_WORKSPACE" "$(docker info --format '{{.DockerRootDir}}')"; do
+            free_kib="$(df -Pk "$path" | awk 'END { print $4 }')"
+            if [[ ! "$free_kib" =~ ^[0-9]+$ ]] || (( free_kib < minimum_free_kib )); then
+              echo "::error::At least 6 GiB free is required before pulling the isolated Supabase stack."
+              exit 1
+            fi
+          done
+
+      - name: Run the full automated test suite
+        run: npm test
+
+      - name: Run TypeScript checks
+        run: npm run typecheck
+
+      - name: Typecheck API and webhook tests
+        run: npm run typecheck:webhook-tests
+
+      - name: Build production workspaces
+        run: npm run build
+
+      - name: Validate Cloudflare bundle configuration
+        run: npm run cloudflare:webhook:dry-run
+
+      - name: Smoke-test Worker HTTP and Cron handlers in local Workerd
+        run: npm run cloudflare:webhook:smoke
+
+      - name: Validate Migration 20, rollback, pgTAP, and concurrent RPC behavior
+        run: node scripts/run-paypal-provider-snapshot-postgres-validation.mjs

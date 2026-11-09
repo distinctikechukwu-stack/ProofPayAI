@@ -114,6 +114,52 @@ async function psql(container, sql, allowFailure = false) {
   ], { cwd: localRoot, env: runEnv, input: sql, timeoutMs: 30_000, allowFailure });
 }
 
+async function captureCommand(command, args, options) {
+  try {
+    return await run(command, args, { ...options, allowFailure: true });
+  } catch (error) {
+    return error?.processResult ?? {
+      code: null, signal: null, timedOut: false, outputTruncated: false,
+      stdout: '', stderr: '', spawnErrorCode: typeof error?.code === 'string' ? error.code : null,
+    };
+  }
+}
+
+function diagnosePgTapCommand(result, tool, testFile) {
+  return parsePgTapDiagnostics({
+    exitStatus: result.code, stdout: result.stdout, stderr: result.stderr,
+    timedOut: result.timedOut, outputTruncated: result.outputTruncated,
+    expectedTestFiles: [testFile], testFile, tool, spawnErrorCode: result.spawnErrorCode,
+  });
+}
+
+function isPassingPgTapCommand(result, diagnostic) {
+  return result.code === 0 && !result.timedOut && !result.outputTruncated && diagnostic.kind === 'passed';
+}
+
+async function runPsqlPgTapFallback(container, projectId, testFile, hostTestFile) {
+  const remoteDirectory = '/tmp/proofpay-pgtap-' + projectId;
+  const remoteTestFile = remoteDirectory + '/' + testFile;
+  const options = { cwd: localRoot, env: runEnv, timeoutMs: 30_000 };
+  const directoryResult = await captureCommand('docker', ['exec', container, 'mkdir', '-p', remoteDirectory], options);
+  const directoryDiagnostic = diagnosePgTapCommand(directoryResult, 'docker', testFile);
+  if (directoryResult.code !== 0 || directoryResult.timedOut || directoryResult.outputTruncated) {
+    return { tool: 'docker', diagnostic: directoryDiagnostic };
+  }
+  const copyResult = await captureCommand('docker', ['cp', hostTestFile, container + ':' + remoteTestFile], options);
+  const copyDiagnostic = diagnosePgTapCommand(copyResult, 'docker', testFile);
+  if (copyResult.code !== 0 || copyResult.timedOut || copyResult.outputTruncated) {
+    return { tool: 'docker', diagnostic: copyDiagnostic };
+  }
+  const psqlResult = await captureCommand('docker', [
+    'exec', '-i', container, 'psql', '-X', '-q',
+    '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=verbose', '-v', 'SHOW_CONTEXT=always',
+    '-U', 'postgres', '-d', 'postgres', '-A', '-t', '-f', remoteTestFile,
+  ], options);
+  return { tool: 'psql', diagnostic: diagnosePgTapCommand(psqlResult, 'psql', testFile) };
+}
+
+
 function safeError(error) {
   const child = error?.processResult;
   if (child && stage === 'pgtap_suite') {
@@ -294,32 +340,58 @@ async function main() {
 
   stage = 'pgtap_suite';
   const testsRoot = join(localRoot, 'supabase', 'tests');
-  await mkdir(testsRoot, { recursive: true });
-  for (const file of pgtapTestFiles) await copyFile(join(root, 'supabase', 'tests', file), join(testsRoot, file));
-  const tap = await run(cli, ['test', 'db', '--local'], {
-    cwd: localRoot,
-    env: runEnv,
-    timeoutMs: 8 * 60_000,
-    allowFailure: true,
-  });
-  const diagnostic = parsePgTapDiagnostics({
-    exitStatus: tap.code,
-    stdout: tap.stdout,
-    stderr: tap.stderr,
-    timedOut: tap.timedOut,
-    outputTruncated: tap.outputTruncated,
-    expectedTestFiles: pgtapTestFiles,
-  });
-  if (tap.code !== 0 || tap.timedOut || diagnostic.outputTruncated || diagnostic.failedAssertions > 0 || diagnostic.passingAssertions === 0) {
-    const error = new Error('Supabase pgTAP validation failed');
-    error.processResult = tap;
+  const testResults = [];
+
+  for (const file of pgtapTestFiles) {
+    const hostTestFile = join(testsRoot, file);
+    let cliDiagnostic = { kind: 'harness_error', tool: 'harness', testFile: file };
+    let cliPassed = false;
+    let psqlFallback = null;
+
+    try {
+      await rm(testsRoot, { recursive: true, force: true });
+      await mkdir(testsRoot, { recursive: true });
+      await copyFile(join(root, 'supabase', 'tests', file), hostTestFile);
+      const cliResult = await captureCommand(cli, ['test', 'db', '--local'], {
+        cwd: localRoot, env: runEnv, timeoutMs: 8 * 60_000,
+      });
+      cliDiagnostic = diagnosePgTapCommand(cliResult, 'supabase', file);
+      cliPassed = isPassingPgTapCommand(cliResult, cliDiagnostic);
+      emit('pgtap_file_cli', cliPassed ? 'passed' : 'failed', { testFile: file, diagnostic: cliDiagnostic });
+
+      if (!cliPassed) {
+        psqlFallback = await runPsqlPgTapFallback(container, projectId, file, hostTestFile);
+        const fallbackPassed = psqlFallback.tool === 'psql' && psqlFallback.diagnostic.kind === 'passed';
+        emit('pgtap_file_psql_fallback', fallbackPassed ? 'passed' : 'failed', {
+          testFile: file, tool: psqlFallback.tool, diagnostic: psqlFallback.diagnostic,
+        });
+      }
+    } catch (error) {
+      cliDiagnostic = {
+        kind: 'harness_error', tool: 'harness', testFile: file,
+        code: /^[A-Z0-9_]{1,50}$/.test(String(error?.code || '')) ? error.code : null,
+      };
+      emit('pgtap_file_harness', 'failed', { testFile: file, diagnostic: cliDiagnostic });
+    } finally {
+      await rm(testsRoot, { recursive: true, force: true });
+    }
+
+    testResults.push({ testFile: file, cliPassed, cliDiagnostic, psqlFallback });
+  }
+
+  if (testResults.some((result) => !result.cliPassed)) {
+    const error = new Error('One or more isolated Supabase pgTAP files failed');
+    error.safeDiagnostic = { kind: 'required_pgtap_validation_failed', testFiles: testResults };
     throw error;
   }
+
   emit('pgtap_suite', 'passed', {
-    testFiles: pgtapTestFiles.length,
-    passingAssertions: diagnostic.passingAssertions,
-    failedAssertions: diagnostic.failedAssertions,
+    testFiles: testResults.length,
+    results: testResults.map(({ testFile, cliDiagnostic }) => ({
+      testFile, passingAssertions: cliDiagnostic.passingAssertions, assertionCount: cliDiagnostic.assertionCount,
+    })),
   });
+
   stage = 'two_session_snapshot_race';
   await run(process.execPath, [join(root, 'scripts', 'test-paypal-provider-snapshot-concurrency.mjs'), projectId], {
     cwd: root,
@@ -357,7 +429,7 @@ try {
   await main();
 } catch (error) {
   exitCode = 1;
-  const diagnostic = safeError(error);
+  const diagnostic = error?.safeDiagnostic ?? safeError(error);
   emit(stage, 'failed', {
     diagnostic,
     exitStatus: error?.processResult?.code ?? null,

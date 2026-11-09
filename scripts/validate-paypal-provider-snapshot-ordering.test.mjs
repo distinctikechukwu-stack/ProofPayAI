@@ -175,56 +175,87 @@ test("Cloudflare drain caps remain eight Queue rows and one Cron row", () => {
   assert.equal(config.triggers.crons[0], "* * * * *");
 });
 
-test("pgTAP diagnostics report assertion identity without exposing command output", () => {
+test("pgTAP diagnostics parse Supabase CLI and pg_prove summaries", () => {
+  const file = "paypal_provider_snapshot_ordering.test.sql";
+  const pgProve = parsePgTapDiagnostics({
+    exitStatus: 1, tool: "supabase", testFile: file, expectedTestFiles: [file],
+    stdout: [
+      "2026-11-09T10:00:00.000Z /tmp/supabase/tests/" + file + " .. Dubious, test returned 255",
+      "Failed 2/66 subtests", "Files=1, Tests=66, Result: FAIL",
+    ].join("\n"),
+  });
+  assert.equal(pgProve.kind, "pgprove_failure_summary");
+  assert.equal(pgProve.testFile, file);
+  assert.deepEqual(pgProve.reportedTestFiles, [file]);
+  assert.equal(pgProve.pgProveFailedSubtests, 2);
+  assert.equal(pgProve.assertionCount, 66);
+  assert.equal(pgProve.failedAssertions, 0);
+  assert.deepEqual(pgProve.failures, []);
+
+  const cliPass = parsePgTapDiagnostics({
+    exitStatus: 0, tool: "supabase", testFile: file,
+    stdout: ["/tmp/supabase/tests/" + file + " .. ok", "All tests successful.", "Files=1, Tests=66, Result: PASS"].join("\n"),
+  });
+  assert.equal(cliPass.kind, "passed");
+  assert.equal(cliPass.passingAssertions, 66);
+});
+
+test("psql fallback diagnostics identify only the allowlisted file, line, and SQLSTATE", () => {
+  const file = "paypal_provider_snapshot_ordering.test.sql";
+  const privateEmail = "private" + "@example.invalid";
+  const diagnostic = parsePgTapDiagnostics({
+    exitStatus: 3, tool: "psql", testFile: file,
+    stderr: [
+      "psql:/tmp/proofpay-pgtap/" + file + ":412: ERROR:  23505: duplicate key for " + privateEmail,
+      "LINE 1: update invoices set status = 'paid';", "DETAIL: synthetic-sensitive-record",
+    ].join("\n"),
+  });
+  assert.equal(diagnostic.kind, "sql_execution_error");
+  assert.deepEqual(diagnostic.sqlStateCodes, ["23505"]);
+  assert.deepEqual(diagnostic.statementLocations, [{ file, line: 412 }]);
+  assert.equal(diagnostic.failedAssertions, 0);
+  assert.ok(!JSON.stringify(diagnostic).includes(privateEmail));
+  assert.ok(!JSON.stringify(diagnostic).includes("synthetic-sensitive-record"));
+  assert.ok(!JSON.stringify(diagnostic).includes("update invoices"));
+});
+
+test("pgTAP diagnostics preserve assertion identity through CLI prefixes and redact values", () => {
+  const file = "project_completion_workflow.test.sql";
   const syntheticEmail = "user" + "@example.invalid";
   const syntheticId = ["00000000", "0000", "4000", "8000", "000000000001"].join("-");
   const diagnostic = parsePgTapDiagnostics({
-    exitStatus: 1,
-    stdout: [
-      "# " + "project_completion_workflow.test.sql",
-      "ok 1 - completion remains unchanged",
-      "not ok 2 - the expected row contains " + syntheticEmail + " and " + syntheticId,
-    ].join("\n"),
-    expectedTestFiles: ["project_completion_workflow.test.sql", "paypal_provider_snapshot_ordering.test.sql"],
+    exitStatus: 1, tool: "pg_prove", testFile: file,
+    stdout: ["2026-11-09T10:01:00.000Z \u001b[31mnot ok 2 - the row contains " + syntheticEmail + " and " + syntheticId + "\u001b[0m"].join("\n"),
   });
   assert.equal(diagnostic.kind, "pgtap_assertion_failure");
-  assert.equal(diagnostic.passingAssertions, 1);
-  assert.equal(diagnostic.assertionCount, 2);
+  assert.equal(diagnostic.passingAssertions, 0);
+  assert.equal(diagnostic.assertionCount, 1);
   assert.equal(diagnostic.failedAssertions, 1);
-  assert.deepEqual(diagnostic.reportedTestFiles, ["project_completion_workflow.test.sql"]);
   assert.equal(diagnostic.failures[0].number, 2);
-  assert.equal(diagnostic.failures[0].file, "project_completion_workflow.test.sql");
-  assert.equal(diagnostic.failures[0].description, "the expected row contains redacted email and redacted id");
+  assert.equal(diagnostic.failures[0].file, file);
+  assert.equal(diagnostic.failures[0].description, "the row contains redacted email and redacted id");
   assert.ok(!JSON.stringify(diagnostic).includes(syntheticEmail));
   assert.ok(!JSON.stringify(diagnostic).includes(syntheticId));
 });
 
-test("pgTAP diagnostics classify SQL execution failures and expose only SQLSTATE", () => {
-  const syntheticUrl = "postgres" + "ql://" + "fixture:placeholder@localhost/test";
-  const diagnostic = parsePgTapDiagnostics({
-    exitStatus: 1,
-    stderr: "ERROR:  23505: duplicate key for " + syntheticUrl + " with token=" + "example-value",
-  });
-  assert.equal(diagnostic.kind, "sql_execution_error");
-  assert.deepEqual(diagnostic.sqlStateCodes, ["23505"]);
-  assert.ok(!JSON.stringify(diagnostic).includes("fixture:placeholder"));
-  assert.ok(!JSON.stringify(diagnostic).includes("example-value"));
+test("diagnostics classify missing fixtures, CLI errors, database connection errors, and passing TAP", () => {
+  assert.equal(parsePgTapDiagnostics({ exitStatus: 1, tool: "supabase", stderr: "could not find test file project.test.sql" }).kind, "missing_fixture");
+  assert.equal(parsePgTapDiagnostics({ exitStatus: null, tool: "supabase", spawnErrorCode: "ENOENT" }).kind, "cli_error");
+  assert.equal(parsePgTapDiagnostics({ exitStatus: 2, tool: "supabase", stderr: "supabase: unknown command test" }).kind, "cli_error");
+  assert.equal(parsePgTapDiagnostics({ exitStatus: 1, tool: "supabase", stderr: "ERROR: failed to start the local pg_prove command" }).kind, "cli_error");
+  assert.equal(parsePgTapDiagnostics({ exitStatus: 1, tool: "supabase", stderr: "supabase: error: connection refused while starting the local test runner" }).kind, "database_connection_error");
+  assert.equal(parsePgTapDiagnostics({ exitStatus: 0, tool: "psql", testFile: "project_completion_workflow.test.sql", stdout: "ok 1 - schema is ready\n1..1" }).kind, "passed");
 });
 
-test("pgTAP diagnostics distinguish missing fixtures, CLI errors, and passing suites", () => {
-  assert.equal(parsePgTapDiagnostics({ exitStatus: 1, stderr: "could not find test file project.test.sql" }).kind, "missing_fixture");
-  assert.equal(parsePgTapDiagnostics({ exitStatus: null, spawnErrorCode: "ENOENT" }).kind, "cli_error");
-  assert.equal(parsePgTapDiagnostics({ exitStatus: 2, stderr: "supabase: unknown command test" }).kind, "cli_error");
-  assert.equal(parsePgTapDiagnostics({ exitStatus: 0, stdout: "ok 1 - schema is ready" }).kind, "passed");
-  const pgProve = parsePgTapDiagnostics({ exitStatus: 1, stderr: '# Failed test 9: "fixed search path is enforced"' });
-  assert.equal(pgProve.failures[0].number, 9);
-  assert.equal(pgProve.failures[0].description, "fixed search path is enforced");
-  assert.equal(parsePgTapDiagnostics({ exitStatus: 1, stdout: "not ok 1 - failure", outputTruncated: true }).outputTruncated, true);
-});
-
-test("pgTAP runner captures nonzero output and preserves mandatory failure behavior", () => {
-  assert.match(postgresRunner, /parsePgTapDiagnostics/);
-  assert.match(postgresRunner, /allowFailure: true/);
-  assert.match(postgresRunner, /stdout: Buffer\.concat\(stdout\)\.toString\('utf8'\)/);
-  assert.match(postgresRunner, /if \(tap\.code !== 0 \|\| tap\.timedOut \|\| diagnostic\.outputTruncated \|\| diagnostic\.failedAssertions > 0/);
+test("pgTAP runner isolates each SQL file and retains strict failure behavior", () => {
+  assert.match(postgresRunner, /for \(const file of pgtapTestFiles\)/);
+  assert.match(postgresRunner, /\['test', 'db', '--local'\]/);
+  assert.match(postgresRunner, /runPsqlPgTapFallback/);
+  assert.match(postgresRunner, /ON_ERROR_STOP=1/);
+  assert.match(postgresRunner, /VERBOSITY=verbose/);
+  assert.match(postgresRunner, /SHOW_CONTEXT=always/);
+  assert.match(postgresRunner, /error\.safeDiagnostic/);
+  assert.match(postgresRunner, /await rm\(resolvedTemp, \{ recursive: true, force: true \}\)/);
+  assert.doesNotMatch(postgresRunner, /--linked/);
+  assert.doesNotMatch(postgresRunner, /--db-url/);
 });

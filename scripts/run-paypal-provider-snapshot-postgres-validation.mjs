@@ -5,6 +5,7 @@ import { access, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } fr
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parsePgTapDiagnostics } from './paypal-pgtap-diagnostics.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const migration19 = '202611050001_project_completion_workflow.sql';
@@ -13,6 +14,7 @@ const supabaseVersion = '2.122.0';
 const expectedNodeVersion = '26.13.0';
 const excludedServices = 'studio,imgproxy,edge-runtime,logflare,vector';
 const maxOutputBytes = 1_000_000;
+const pgtapTestFiles = Object.freeze(['project_completion_workflow.test.sql', 'paypal_provider_snapshot_ordering.test.sql']);
 let stage = 'preflight';
 let runEnv;
 let cli;
@@ -46,13 +48,20 @@ function run(command, args, { cwd, env, input, timeoutMs = 120_000, allowFailure
     const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     const stdout = [];
     const stderr = [];
-    let captured = 0;
     let timedOut = false;
-    const collect = (chunks) => (chunk) => {
-      if (captured >= maxOutputBytes) return;
-      const value = chunk.subarray(0, Math.min(chunk.length, maxOutputBytes - captured));
-      chunks.push(value);
-      captured += value.length;
+    let outputTruncated = false;
+    const collect = (chunks) => {
+      let captured = 0;
+      return (chunk) => {
+        if (captured >= maxOutputBytes) {
+          outputTruncated = true;
+          return;
+        }
+        const value = chunk.subarray(0, Math.min(chunk.length, maxOutputBytes - captured));
+        chunks.push(value);
+        captured += value.length;
+        if (value.length < chunk.length) outputTruncated = true;
+      };
     };
     child.stdout.on('data', collect(stdout));
     child.stderr.on('data', collect(stderr));
@@ -63,6 +72,15 @@ function run(command, args, { cwd, env, input, timeoutMs = 120_000, allowFailure
     }, timeoutMs);
     child.once('error', (error) => {
       clearTimeout(timer);
+      error.processResult = {
+        code: null,
+        signal: null,
+        timedOut,
+        outputTruncated,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+        spawnErrorCode: typeof error.code === 'string' ? error.code : null,
+      };
       rejectRun(error);
     });
     child.once('close', (code, signal) => {
@@ -71,6 +89,7 @@ function run(command, args, { cwd, env, input, timeoutMs = 120_000, allowFailure
         code,
         signal,
         timedOut,
+        outputTruncated,
         stdout: Buffer.concat(stdout).toString('utf8'),
         stderr: Buffer.concat(stderr).toString('utf8'),
       };
@@ -97,13 +116,24 @@ async function psql(container, sql, allowFailure = false) {
 
 function safeError(error) {
   const child = error?.processResult;
+  if (child && stage === 'pgtap_suite') {
+    return parsePgTapDiagnostics({
+      exitStatus: child.code,
+      stdout: child.stdout,
+      stderr: child.stderr,
+      timedOut: child.timedOut,
+      outputTruncated: child.outputTruncated,
+      expectedTestFiles: pgtapTestFiles,
+      spawnErrorCode: child.spawnErrorCode,
+    });
+  }
   if (child) {
-    const errorCodeMatch = child.stderr.match(/(?:ERROR|FATAL):\s*([A-Z0-9_]{3,80})/);
+    const parsed = parsePgTapDiagnostics({ exitStatus: child.code, stderr: child.stderr });
     return {
       kind: 'command_failed',
       exitStatus: child.code,
       timedOut: child.timedOut,
-      databaseErrorCode: errorCodeMatch?.[1] || null,
+      databaseErrorCode: parsed.sqlStateCodes[0] || null,
     };
   }
   return { kind: 'harness_error', code: /^[A-Z0-9_]{1,50}$/.test(String(error?.code || '')) ? error.code : null };
@@ -265,17 +295,31 @@ async function main() {
   stage = 'pgtap_suite';
   const testsRoot = join(localRoot, 'supabase', 'tests');
   await mkdir(testsRoot, { recursive: true });
-  const testFiles = ['project_completion_workflow.test.sql', 'paypal_provider_snapshot_ordering.test.sql'];
-  for (const file of testFiles) await copyFile(join(root, 'supabase', 'tests', file), join(testsRoot, file));
-  const tap = await run(cli, ['test', 'db', '--local'], { cwd: localRoot, env: runEnv, timeoutMs: 8 * 60_000 });
-  const tapText = tap.stdout + '\n' + tap.stderr;
-  const failures = [...tapText.matchAll(/^\s*not ok\s+\d+/gm)].length;
-  const passCount = [...tapText.matchAll(/^\s*ok\s+\d+/gm)].length;
-  assert.equal(tap.code, 0, 'Supabase pgTAP command returned non-zero');
-  assert.equal(failures, 0, 'pgTAP reported one or more failed assertions');
-  assert.ok(passCount > 0, 'could not find pgTAP passing assertion records in runner output');
-  emit('pgtap_suite', 'passed', { testFiles: testFiles.length, passingAssertions: passCount, failedAssertions: failures });
-
+  for (const file of pgtapTestFiles) await copyFile(join(root, 'supabase', 'tests', file), join(testsRoot, file));
+  const tap = await run(cli, ['test', 'db', '--local'], {
+    cwd: localRoot,
+    env: runEnv,
+    timeoutMs: 8 * 60_000,
+    allowFailure: true,
+  });
+  const diagnostic = parsePgTapDiagnostics({
+    exitStatus: tap.code,
+    stdout: tap.stdout,
+    stderr: tap.stderr,
+    timedOut: tap.timedOut,
+    outputTruncated: tap.outputTruncated,
+    expectedTestFiles: pgtapTestFiles,
+  });
+  if (tap.code !== 0 || tap.timedOut || diagnostic.outputTruncated || diagnostic.failedAssertions > 0 || diagnostic.passingAssertions === 0) {
+    const error = new Error('Supabase pgTAP validation failed');
+    error.processResult = tap;
+    throw error;
+  }
+  emit('pgtap_suite', 'passed', {
+    testFiles: pgtapTestFiles.length,
+    passingAssertions: diagnostic.passingAssertions,
+    failedAssertions: diagnostic.failedAssertions,
+  });
   stage = 'two_session_snapshot_race';
   await run(process.execPath, [join(root, 'scripts', 'test-paypal-provider-snapshot-concurrency.mjs'), projectId], {
     cwd: root,

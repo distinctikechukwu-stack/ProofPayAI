@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { parsePgTapDiagnostics } from './paypal-pgtap-diagnostics.mjs';
 
 const migration = readFileSync(new URL("../supabase/migrations/202611070001_paypal_provider_snapshot_ordering.sql", import.meta.url), "utf8").toLowerCase();
 const normalized = migration.replace(/\s+/g, " ");
@@ -172,4 +173,58 @@ test("Cloudflare drain caps remain eight Queue rows and one Cron row", () => {
   assert.match(readFileSync(new URL("../apps/api/src/cloudflare-paypal-webhook.ts", import.meta.url), "utf8"), /drainInbox\(env, 1\)/);
   assert.equal(config.queues.consumers[0].max_batch_size, 1);
   assert.equal(config.triggers.crons[0], "* * * * *");
+});
+
+test("pgTAP diagnostics report assertion identity without exposing command output", () => {
+  const syntheticEmail = "user" + "@example.invalid";
+  const syntheticId = ["00000000", "0000", "4000", "8000", "000000000001"].join("-");
+  const diagnostic = parsePgTapDiagnostics({
+    exitStatus: 1,
+    stdout: [
+      "# " + "project_completion_workflow.test.sql",
+      "ok 1 - completion remains unchanged",
+      "not ok 2 - the expected row contains " + syntheticEmail + " and " + syntheticId,
+    ].join("\n"),
+    expectedTestFiles: ["project_completion_workflow.test.sql", "paypal_provider_snapshot_ordering.test.sql"],
+  });
+  assert.equal(diagnostic.kind, "pgtap_assertion_failure");
+  assert.equal(diagnostic.passingAssertions, 1);
+  assert.equal(diagnostic.assertionCount, 2);
+  assert.equal(diagnostic.failedAssertions, 1);
+  assert.deepEqual(diagnostic.reportedTestFiles, ["project_completion_workflow.test.sql"]);
+  assert.equal(diagnostic.failures[0].number, 2);
+  assert.equal(diagnostic.failures[0].file, "project_completion_workflow.test.sql");
+  assert.equal(diagnostic.failures[0].description, "the expected row contains redacted email and redacted id");
+  assert.ok(!JSON.stringify(diagnostic).includes(syntheticEmail));
+  assert.ok(!JSON.stringify(diagnostic).includes(syntheticId));
+});
+
+test("pgTAP diagnostics classify SQL execution failures and expose only SQLSTATE", () => {
+  const syntheticUrl = "postgres" + "ql://" + "fixture:placeholder@localhost/test";
+  const diagnostic = parsePgTapDiagnostics({
+    exitStatus: 1,
+    stderr: "ERROR:  23505: duplicate key for " + syntheticUrl + " with token=" + "example-value",
+  });
+  assert.equal(diagnostic.kind, "sql_execution_error");
+  assert.deepEqual(diagnostic.sqlStateCodes, ["23505"]);
+  assert.ok(!JSON.stringify(diagnostic).includes("fixture:placeholder"));
+  assert.ok(!JSON.stringify(diagnostic).includes("example-value"));
+});
+
+test("pgTAP diagnostics distinguish missing fixtures, CLI errors, and passing suites", () => {
+  assert.equal(parsePgTapDiagnostics({ exitStatus: 1, stderr: "could not find test file project.test.sql" }).kind, "missing_fixture");
+  assert.equal(parsePgTapDiagnostics({ exitStatus: null, spawnErrorCode: "ENOENT" }).kind, "cli_error");
+  assert.equal(parsePgTapDiagnostics({ exitStatus: 2, stderr: "supabase: unknown command test" }).kind, "cli_error");
+  assert.equal(parsePgTapDiagnostics({ exitStatus: 0, stdout: "ok 1 - schema is ready" }).kind, "passed");
+  const pgProve = parsePgTapDiagnostics({ exitStatus: 1, stderr: '# Failed test 9: "fixed search path is enforced"' });
+  assert.equal(pgProve.failures[0].number, 9);
+  assert.equal(pgProve.failures[0].description, "fixed search path is enforced");
+  assert.equal(parsePgTapDiagnostics({ exitStatus: 1, stdout: "not ok 1 - failure", outputTruncated: true }).outputTruncated, true);
+});
+
+test("pgTAP runner captures nonzero output and preserves mandatory failure behavior", () => {
+  assert.match(postgresRunner, /parsePgTapDiagnostics/);
+  assert.match(postgresRunner, /allowFailure: true/);
+  assert.match(postgresRunner, /stdout: Buffer\.concat\(stdout\)\.toString\('utf8'\)/);
+  assert.match(postgresRunner, /if \(tap\.code !== 0 \|\| tap\.timedOut \|\| diagnostic\.outputTruncated \|\| diagnostic\.failedAssertions > 0/);
 });

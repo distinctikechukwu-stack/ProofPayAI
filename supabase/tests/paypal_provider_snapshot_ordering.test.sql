@@ -200,7 +200,7 @@ select 'create_initial',
 from (
   select public.begin_paypal_invoice_create(
     (select id from public.milestones where project_id = '00000000-0000-4000-8000-000000000900' and sequence = 1),
-    'TEST-PROVIDER-OP-CREATE-01',
+    'TEST-PROVIDER-OP-CREATE-1',
     '00000000-0000-4000-8000-000000000002'
   ) as receipt
 ) as created;
@@ -230,7 +230,7 @@ select 'create_retry',
 from (
   select public.begin_paypal_invoice_create(
     (select id from public.milestones where project_id = '00000000-0000-4000-8000-000000000900' and sequence = 1),
-    'TEST-PROVIDER-OP-CREATE-02',
+    'TEST-PROVIDER-OP-CREATE-2',
     '00000000-0000-4000-8000-000000000002'
   ) as receipt
 ) as retried;

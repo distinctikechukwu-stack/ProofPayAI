@@ -8,6 +8,29 @@ const VALID_SIGNALS = new Set(['SIGABRT', 'SIGINT', 'SIGKILL', 'SIGSEGV', 'SIGTE
 const VALID_SPAWN_ERROR_CODES = new Set(['EACCES', 'EINVAL', 'ENOENT', 'ENOTDIR', 'ETIMEDOUT']);
 const MAX_CONTAINERS = 40;
 const RECOMMENDED_MINIMUM_DISK_KIB = 6 * 1024 * 1024;
+const MAX_STARTUP_OUTPUT_BYTES = 2_000_000;
+
+const STARTUP_STAGE_MARKERS = Object.freeze([
+  { stage: 'configuration_load', pattern: /\b(?:reading|loading|validating)\b.{0,80}\b(?:config(?:uration)?|config\.toml)\b/i },
+  { stage: 'registry_access', pattern: /\b(?:registry|manifest|oauth token)\b/i },
+  { stage: 'image_pull', pattern: /\b(?:pulling|pulled|download(?:ing|ed)|error pulling)\b.{0,80}\b(?:image|layer|manifest)\b/i },
+  { stage: 'container_creation', pattern: /\b(?:creating|created|failed to create)\b.{0,80}\b(?:container|endpoint|task)\b/i },
+  { stage: 'container_start', pattern: /\b(?:starting|started|failed to start|error starting)\b.{0,80}\b(?:container|service|postgres|database)\b/i },
+  { stage: 'database_initialization', pattern: /\b(?:initdb|database initialization|initializing database|database system is (?:starting up|ready))\b/i },
+  { stage: 'health_check', pattern: /\bhealth.?check\b|\b(?:healthy|unhealthy)\b/i },
+]);
+
+const STARTUP_FAILURE_SIGNATURES = Object.freeze([
+  { signal: 'registry_rate_limited', kind: 'image_registry_failure', phase: 'registry_access', pattern: /\b(?:toomanyrequests|too many requests|pull rate limit|rate limit exceeded)\b/i },
+  { signal: 'image_registry_access_denied', kind: 'image_registry_failure', phase: 'registry_access', pattern: /\b(?:pull access denied|unauthorized(?:\s*:)?|authentication required|failed to authorize|failed to fetch oauth token)\b/i },
+  { signal: 'registry_transport_failure', kind: 'image_registry_failure', phase: 'registry_access', pattern: /\b(?:failed to resolve reference|failed to do request:.*(?:dial tcp|lookup|timeout)|unexpected eof|tls handshake timeout)\b/i },
+  { signal: 'image_manifest_unavailable', kind: 'image_pull_failure', phase: 'image_pull', pattern: /\b(?:manifest unknown|manifest (?:not found|does not exist)|repository does not exist)\b/i },
+  { signal: 'image_layer_download_failure', kind: 'image_pull_failure', phase: 'image_pull', pattern: /\b(?:failed to pull (?:an? )?image|error pulling (?:an? )?image|error pulling fs layer|failed to copy:|failed to extract layer)\b/i },
+  { signal: 'container_creation_failure', kind: 'container_creation_failure', phase: 'container_creation', pattern: /\b(?:failed to create (?:container|task|shim|endpoint)|error creating (?:container|task|endpoint)|port is already allocated|address already in use)\b/i },
+  { signal: 'container_runtime_failure', kind: 'container_start_failure', phase: 'container_start', pattern: /\b(?:oci runtime create failed|failed to start (?:container|service)|error starting (?:container|service)|container process exited)\b/i },
+  { signal: 'database_initialization_failure', kind: 'database_initialization_failure', phase: 'database_initialization', pattern: /\b(?:initdb:\s*(?:error|fatal)|database initialization failed|failed to initialize (?:the )?database|postgres(?:ql)?[^\r\n]{0,60}\b(?:panic|fatal)\b|fatal:.*database system)\b/i },
+  { signal: 'docker_daemon_unavailable', kind: 'startup_network_failure', phase: 'docker_daemon', pattern: /\b(?:cannot connect to the docker daemon|error during connect|is the docker daemon running)\b/i },
+]);
 
 function exitStatus(value) {
   return Number.isInteger(value) && value >= 0 && value <= 255 ? value : null;
@@ -15,6 +38,60 @@ function exitStatus(value) {
 
 function asText(value) {
   return typeof value === 'string' ? value : '';
+}
+
+function boundedByteCount(value) {
+  const count = Buffer.byteLength(asText(value), 'utf8');
+  return Number.isSafeInteger(count) ? Math.min(count, MAX_STARTUP_OUTPUT_BYTES) : MAX_STARTUP_OUTPUT_BYTES;
+}
+
+function collectStartupOutputEvidence(stdout, stderr, processResult) {
+  const safeStdout = asText(stdout);
+  const safeStderr = asText(stderr);
+  const combined = safeStdout + '\n' + safeStderr;
+  const output = combined.slice(0, MAX_STARTUP_OUTPUT_BYTES);
+  const failureSignals = STARTUP_FAILURE_SIGNATURES
+    .filter(({ pattern }) => pattern.test(output))
+    .map(({ signal }) => signal)
+    .slice(0, 10);
+  const observedStages = STARTUP_STAGE_MARKERS
+    .filter(({ pattern }) => pattern.test(output))
+    .map(({ stage }) => stage)
+    .slice(0, 8);
+  const truncated = Boolean(processResult?.outputTruncated)
+    || Buffer.byteLength(combined, 'utf8') > MAX_STARTUP_OUTPUT_BYTES;
+  const classificationBasis = truncated
+    ? 'captured_output_truncated'
+    : failureSignals.length > 0
+      ? 'recognized_failure_signature'
+      : output.trim().length > 0
+        ? 'no_recognized_failure_signature'
+        : 'no_cli_output';
+
+  return {
+    capturedBytes: {
+      stdout: boundedByteCount(safeStdout),
+      stderr: boundedByteCount(safeStderr),
+      total: boundedByteCount(combined),
+    },
+    truncated,
+    classificationBasis,
+    observedStages,
+    recognizedFailureSignals: failureSignals,
+  };
+}
+
+export function buildSupabaseStartArgs(excludedServices, diagnosticsMode = 'standard') {
+  if (typeof excludedServices !== 'string' || !/^[a-z][a-z0-9-]*(?:,[a-z][a-z0-9-]*)*$/i.test(excludedServices)) {
+    throw new TypeError('Invalid Supabase service exclusion list');
+  }
+  if (diagnosticsMode !== 'standard' && diagnosticsMode !== 'debug') {
+    throw new TypeError('Invalid Supabase startup diagnostics mode');
+  }
+  return [
+    ...(diagnosticsMode === 'debug' ? ['--debug'] : []),
+    'start', '--exclude', excludedServices,
+  ];
 }
 
 function safeToolResult(result) {
@@ -109,7 +186,7 @@ function extractServices(text, projectId, containers) {
   return [...services].sort().slice(0, 12);
 }
 
-function classifyFailure(text, processResult, containers, resources) {
+function classifyFailure(text, processResult, containers, resources, startupOutputEvidence) {
   const lower = text.toLowerCase();
   const signals = resources?.belowRecommendedDiskMinimum === true
     ? ['disk_headroom_below_recommended_minimum']
@@ -138,6 +215,16 @@ function classifyFailure(text, processResult, containers, resources) {
   if (hasConfigError) {
     signals.push('supabase_cli_configuration_failure');
     return { kind: 'supabase_cli_configuration_failure', phase: 'cli_configuration', resource: null, signals };
+  }
+  const recognizedSignature = STARTUP_FAILURE_SIGNATURES.find(({ signal }) =>
+    startupOutputEvidence.recognizedFailureSignals.includes(signal));
+  if (recognizedSignature) {
+    return {
+      kind: recognizedSignature.kind,
+      phase: recognizedSignature.phase,
+      resource: null,
+      signals: [recognizedSignature.signal],
+    };
   }
   if (hasNetworkError) {
     signals.push(/temporary failure in name resolution|could not resolve/.test(lower) ? 'dns_resolution_failure' : 'network_connectivity_failure');
@@ -169,6 +256,9 @@ export function parseSupabaseStartupDiagnostics({
   diskResult = null,
 } = {}) {
   const output = [asText(processResult.stdout), asText(processResult.stderr)].join('\n').slice(0, 2_000_000);
+  const startupOutputEvidence = collectStartupOutputEvidence(
+    processResult.stdout, processResult.stderr, processResult,
+  );
   const discoveredNames = [...new Set(containerNames
     .filter((name) => typeof name === 'string')
     .flatMap((name) => parseSupabaseProjectContainerNames(name, projectId)))].slice(0, MAX_CONTAINERS);
@@ -186,7 +276,7 @@ export function parseSupabaseStartupDiagnostics({
       };
     }).filter(Boolean).slice(0, MAX_CONTAINERS);
   const resources = parseSupabaseResourceSnapshot(dockerInfoResult?.stdout, diskResult?.stdout);
-  const classification = classifyFailure(output, processResult, stateRecords, resources);
+  const classification = classifyFailure(output, processResult, stateRecords, resources, startupOutputEvidence);
   const discoveryAvailable = containerListResult
     ? containerListResult.code === 0 && !containerListResult.timedOut && !containerListResult.outputTruncated
     : null;
@@ -222,6 +312,7 @@ export function parseSupabaseStartupDiagnostics({
       outputTruncated: Boolean(containerListResult?.outputTruncated),
     },
     resources,
+    startupOutputEvidence,
     diagnosticOutputTruncated: Boolean(
       processResult.outputTruncated || containerListResult?.outputTruncated
       || dockerInfoResult?.outputTruncated || diskResult?.outputTruncated,

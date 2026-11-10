@@ -14,6 +14,7 @@ import {
   parseSupabaseProjectContainerNames,
   parseSupabaseResourceSnapshot,
   parseSupabaseStartupDiagnostics,
+  buildSupabaseStartArgs,
   runSupabaseStartWithDiagnostics,
 } from './supabase-startup-diagnostics.mjs';
 
@@ -336,6 +337,12 @@ test("PostgreSQL CI is read-only and triggers only on the isolated branch", () =
   assert.match(postgresRunner, /environmentFilesCopied: false/);
 });
 
+test("isolated PostgreSQL validation enables startup debug without workflow secrets", () => {
+  assert.match(workflow, /PROOFPAY_SUPABASE_STARTUP_DIAGNOSTICS:\s+'debug'/);
+  assert.doesNotMatch(workflow, /secrets\./i);
+  assert.match(postgresRunner, /process\.env\.PROOFPAY_SUPABASE_STARTUP_DIAGNOSTICS === 'debug'/);
+});
+
 test("Linux Workerd smoke uses no secret files and exercises health and Cron", () => {
   assert.match(smoke, /process\.platform, 'linux'/);
   assert.match(smoke, /GITHUB_ACTIONS/);
@@ -525,6 +532,55 @@ test("startup diagnostics identify recognized Supabase configuration errors", ()
   assert.equal(diagnostic.phase, "cli_configuration");
 });
 
+test("startup diagnostics classify registry, container creation, and database initialization errors safely", () => {
+  const registry = startupDiagnostic("failed to fetch oauth token: unauthorized");
+  assert.equal(registry.kind, "image_registry_failure");
+  assert.equal(registry.phase, "registry_access");
+  assert.deepEqual(registry.signals, ["image_registry_access_denied"]);
+  assert.ok(registry.startupOutputEvidence.observedStages.includes("registry_access"));
+
+  const container = startupDiagnostic("failed to create container: port is already allocated");
+  assert.equal(container.kind, "container_creation_failure");
+  assert.equal(container.phase, "container_creation");
+  assert.deepEqual(container.signals, ["container_creation_failure"]);
+
+  const database = startupDiagnostic("initdb: error: could not create directory");
+  assert.equal(database.kind, "database_initialization_failure");
+  assert.equal(database.phase, "database_initialization");
+  assert.deepEqual(database.signals, ["database_initialization_failure"]);
+});
+
+test("startup diagnostics report bounded output evidence without returning CLI text", () => {
+  const privateValue = "synthetic-private-value-never-emit";
+  const diagnostic = startupDiagnostic(`Pulling image layer\n${privateValue}`, {
+    processResult: {
+      code: 1, signal: null, timedOut: false, outputTruncated: false,
+      stdout: "Pulling image layer", stderr: privateValue,
+    },
+  });
+  assert.equal(diagnostic.startupOutputEvidence.classificationBasis, "no_recognized_failure_signature");
+  assert.deepEqual(diagnostic.startupOutputEvidence.observedStages, ["image_pull"]);
+  assert.deepEqual(diagnostic.startupOutputEvidence.capturedBytes, {
+    stdout: Buffer.byteLength("Pulling image layer"),
+    stderr: Buffer.byteLength(privateValue),
+    total: Buffer.byteLength(`Pulling image layer\n${privateValue}`),
+  });
+  assert.ok(!JSON.stringify(diagnostic).includes(privateValue));
+
+  const truncated = startupDiagnostic("arbitrary startup text", {
+    processResult: { code: 1, outputTruncated: true, stdout: "arbitrary startup text", stderr: "" },
+  });
+  assert.equal(truncated.startupOutputEvidence.classificationBasis, "captured_output_truncated");
+  assert.equal(truncated.startupOutputEvidence.truncated, true);
+});
+
+test("Supabase debug startup mode adds only the documented global debug flag", () => {
+  const exclusions = "studio,imgproxy,edge-runtime,logflare,vector";
+  assert.deepEqual(buildSupabaseStartArgs(exclusions), ["start", "--exclude", exclusions]);
+  assert.deepEqual(buildSupabaseStartArgs(exclusions, "debug"), ["--debug", "start", "--exclude", exclusions]);
+  assert.throws(() => buildSupabaseStartArgs(exclusions, "unknown"), /Invalid Supabase startup diagnostics mode/);
+});
+
 test("unknown startup errors remain unclassified and do not create a guessed service", () => {
   const diagnostic = startupDiagnostic("startup operation failed with an unrecognized provider error");
   assert.equal(diagnostic.kind, "unknown_startup_failure");
@@ -561,7 +617,8 @@ test("startup diagnostics retain truncation and command exit/timeout evidence", 
     projectId: startupProjectId,
     containerListResult: { code: 0, timedOut: false, outputTruncated: true, stdout: "", stderr: "" },
   });
-  assert.equal(diagnostic.kind, "image_pull_failure");
+  assert.equal(diagnostic.kind, "image_registry_failure");
+  assert.deepEqual(diagnostic.signals, ["image_registry_access_denied"]);
   assert.equal(diagnostic.process.exitStatus, 1);
   assert.equal(diagnostic.process.signal, "SIGTERM");
   assert.equal(diagnostic.process.spawnErrorCode, null);

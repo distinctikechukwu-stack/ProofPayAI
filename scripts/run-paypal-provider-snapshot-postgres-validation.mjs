@@ -12,6 +12,7 @@ import {
   parseSupabaseContainerState,
   parseSupabaseProjectContainerNames,
   parseSupabaseStartupDiagnostics,
+  buildSupabaseStartArgs,
   runSupabaseStartWithDiagnostics,
 } from './supabase-startup-diagnostics.mjs';
 
@@ -23,6 +24,7 @@ const expectedNodeVersion = '26.13.0';
 const excludedServices = 'studio,imgproxy,edge-runtime,logflare,vector';
 const maxOutputBytes = 1_000_000;
 const pgtapTestFiles = Object.freeze(['project_completion_workflow.test.sql', 'paypal_provider_snapshot_ordering.test.sql']);
+const startupDiagnosticsMode = process.env.PROOFPAY_SUPABASE_STARTUP_DIAGNOSTICS === 'debug' ? 'debug' : 'standard';
 let stage = 'preflight';
 let runEnv;
 let cli;
@@ -276,7 +278,12 @@ async function main() {
   assert.equal(names.at(-1), migration20, 'snapshot ordering migration 20 must remain last');
   const cliVersion = await run(cli, ['--version'], { cwd: root, env: { PATH: process.env.PATH || '' }, timeoutMs: 30_000 });
   assert.match(cliVersion.stdout + cliVersion.stderr, /\b2\.122\.0\b/);
-  emit('preflight', 'passed', { migrations: names.length, supabaseCliVersion: supabaseVersion, nodeVersion: expectedNodeVersion });
+  emit('preflight', 'passed', {
+    migrations: names.length,
+    supabaseCliVersion: supabaseVersion,
+    nodeVersion: expectedNodeVersion,
+    startupDiagnosticsMode,
+  });
 
   const temporaryParent = process.env.RUNNER_TEMP || tmpdir();
   tempRoot = await mkdtemp(join(temporaryParent, 'proofpay-paypal-snapshot-'));
@@ -344,7 +351,9 @@ async function main() {
   stage = 'local_stack_start';
   stackStartAttempted = true;
   await runSupabaseStartWithDiagnostics({
-    start: () => run(cli, ['start', '--exclude', excludedServices], { cwd: localRoot, env: runEnv, timeoutMs: 8 * 60_000 }),
+    start: () => run(cli, buildSupabaseStartArgs(excludedServices, startupDiagnosticsMode), {
+      cwd: localRoot, env: runEnv, timeoutMs: 8 * 60_000,
+    }),
     diagnose: collectSupabaseStartupDiagnostics,
     cleanup: stopLocalStack,
   });

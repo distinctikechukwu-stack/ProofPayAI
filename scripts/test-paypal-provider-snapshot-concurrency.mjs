@@ -1,6 +1,6 @@
-import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { extractPostgresSqlState, formatPaypalConcurrencyDiagnostic } from './paypal-concurrency-diagnostics.mjs';
 
 const projectId = '00000000-0000-4000-8000-000000000900';
 const invoiceId = '00000000-0000-4000-8000-000000009340';
@@ -8,30 +8,97 @@ const olderEventId = '00000000-0000-4000-8000-000000009341';
 const olderLeaseToken = '00000000-0000-4000-8000-000000009342';
 const newerEventId = '00000000-0000-4000-8000-000000009343';
 const newerLeaseToken = '00000000-0000-4000-8000-000000009344';
+const olderApplicationName = 'proofpay_snapshot_older';
+const newerApplicationName = 'proofpay_snapshot_newer';
+const safeSignals = new Set(['SIGABRT', 'SIGINT', 'SIGKILL', 'SIGSEGV', 'SIGTERM']);
+const safeSpawnCodes = new Set(['EACCES', 'EINVAL', 'ENOENT', 'ENOTDIR', 'ETIMEDOUT']);
+
+const state = {
+  phase: 'environment',
+  databaseSetupStarted: false,
+  sessionsStarted: { older: false, newer: false },
+  finalIntegrityReached: false,
+  assertionId: null,
+  sqlState: null,
+  databaseCommand: null,
+};
+const activeSessions = new Set();
+
+class ConcurrencyFailure extends Error {
+  constructor(category, phase, assertionId = null, sqlState = null) {
+    super('Concurrency validation failed');
+    this.category = category;
+    this.phase = phase;
+    this.assertionId = assertionId;
+    this.sqlState = sqlState;
+  }
+}
+
+function fail(category, assertionId = null, sqlState = null) {
+  state.assertionId = assertionId;
+  state.sqlState = sqlState;
+  throw new ConcurrencyFailure(category, state.phase, assertionId, sqlState);
+}
+
+function expect(condition, assertionId, category = 'assertion_failure') {
+  if (!condition) fail(category, assertionId);
+  state.assertionId = null;
+}
+
+function commandSummary(result) {
+  return {
+    exitStatus: Number.isInteger(result?.code) && result.code >= 0 && result.code <= 255 ? result.code : null,
+    timedOut: Boolean(result?.timedOut),
+    signal: safeSignals.has(result?.signal) ? result.signal : null,
+    spawnErrorCode: safeSpawnCodes.has(result?.spawnErrorCode) ? result.spawnErrorCode : null,
+    outputTruncated: Boolean(result?.outputTruncated),
+  };
+}
 
 function startPsql(container, sql, timeoutMs = 20_000) {
   const child = spawn('docker', [
     'exec', '-i', container,
-    'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', '-A', '-t',
-  ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-v', 'VERBOSITY=verbose', '-U', 'postgres', '-d', 'postgres', '-A', '-t',
+  ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, env: process.env });
   const stdout = [];
   const stderr = [];
   let capturedBytes = 0;
+  let outputTruncated = false;
+  let timedOut = false;
   const capture = (target) => (chunk) => {
-    if (capturedBytes >= 128 * 1024) return;
+    if (capturedBytes >= 128 * 1024) {
+      outputTruncated = true;
+      return;
+    }
     const kept = chunk.subarray(0, Math.min(chunk.length, 128 * 1024 - capturedBytes));
     target.push(kept);
     capturedBytes += kept.length;
+    if (kept.length < chunk.length) outputTruncated = true;
   };
   child.stdout.on('data', capture(stdout));
   child.stderr.on('data', capture(stderr));
-  const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
-  const closed = new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.once('close', (code, signal) => {
+  const timer = setTimeout(() => {
+    timedOut = true;
+    child.kill('SIGTERM');
+    setTimeout(() => child.kill('SIGKILL'), 1_000).unref();
+  }, timeoutMs);
+
+  let settled = false;
+  const closed = new Promise((resolve) => {
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      resolve({ code, signal, stdout: Buffer.concat(stdout).toString('utf8'), stderr: Buffer.concat(stderr).toString('utf8') });
-    });
+      resolve({
+        ...result,
+        timedOut,
+        outputTruncated,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+      });
+    };
+    child.once('error', (error) => finish({ code: null, signal: null, spawnErrorCode: error?.code }));
+    child.once('close', (code, signal) => finish({ code, signal }));
   });
   child.stdin.end(sql);
   return { child, closed };
@@ -39,28 +106,70 @@ function startPsql(container, sql, timeoutMs = 20_000) {
 
 async function runPsql(container, sql) {
   const result = await startPsql(container, sql).closed;
-  assert.equal(result.code, 0, 'PostgreSQL setup or assertion query failed');
+  state.databaseCommand = commandSummary(result);
+  if (result.timedOut) fail('postgres_timeout', null, extractPostgresSqlState(result.stderr));
+  if (result.outputTruncated) fail('harness_failure');
+  if (result.code !== 0) {
+    const category = result.spawnErrorCode ? 'harness_failure' : 'postgres_error';
+    fail(category, null, extractPostgresSqlState(result.stderr));
+  }
   return result.stdout.trim();
 }
 
-async function waitForOlderSession(container, timeoutMs) {
+async function waitForSession(container, applicationName, queryPattern, timeoutMs) {
   const expires = Date.now() + timeoutMs;
   while (Date.now() < expires) {
     const count = await runPsql(container,
-      "select count(*) from pg_stat_activity where state = 'active' and query like 'select pg_sleep(10)%';");
+      `select count(*) from pg_stat_activity where application_name = '${applicationName}' and state = 'active' and query like '${queryPattern}';`);
     if (Number(count) > 0) return true;
     await delay(100);
   }
   return false;
 }
 
+async function requireObservedSession(container, applicationName, queryPattern, timeoutMs, session, sessionKey, assertionId) {
+  const observed = await waitForSession(container, applicationName, queryPattern, timeoutMs);
+  state.sessionsStarted[sessionKey] = observed;
+  if (observed) return;
+
+  const result = await session.closed;
+  activeSessions.delete(session);
+  state.databaseCommand = commandSummary(result);
+  if (result.timedOut) fail('postgres_timeout', null, extractPostgresSqlState(result.stderr));
+  if (result.outputTruncated) fail('harness_failure');
+  if (result.spawnErrorCode) fail('harness_failure');
+  if (result.code !== 0) fail('postgres_error', null, extractPostgresSqlState(result.stderr));
+  fail('assertion_failure', assertionId);
+}
+
+function diagnostic(result, failure = null) {
+  return {
+    version: 1,
+    result,
+    category: failure?.category ?? 'completed',
+    phase: failure?.phase ?? state.phase,
+    assertionId: failure?.assertionId ?? state.assertionId,
+    sqlState: failure?.sqlState ?? state.sqlState,
+    databaseSetupStarted: state.databaseSetupStarted,
+    sessionsStarted: state.sessionsStarted,
+    finalIntegrityReached: state.finalIntegrityReached,
+    databaseCommand: state.databaseCommand,
+  };
+}
+
+function emit(result, failure = null) {
+  process.stderr.write(formatPaypalConcurrencyDiagnostic(diagnostic(result, failure)) + '\n');
+}
+
 async function main() {
-  assert.equal(process.platform, 'linux', 'the two-session database race is designed for isolated Linux CI');
-  assert.equal(process.env.GITHUB_ACTIONS, 'true', 'run only from the manual isolated GitHub Actions validation');
+  expect(process.platform === 'linux', 'linux_runner_required', 'environment_failure');
+  expect(process.env.GITHUB_ACTIONS === 'true', 'github_actions_marker_required', 'environment_failure');
   const projectIdArgument = process.argv[2] || '';
-  assert.match(projectIdArgument, /^ppv[a-f0-9]{14}$/, 'expected a disposable local Supabase project ID');
+  expect(/^ppv[a-f0-9]{14}$/.test(projectIdArgument), 'disposable_project_id_required', 'environment_failure');
   const container = 'supabase_db_' + projectIdArgument;
 
+  state.phase = 'database_setup';
+  state.databaseSetupStarted = true;
   await runPsql(container, `
 insert into public.invoices (
   id, project_id, milestone_id, created_by, provider, provider_invoice_id,
@@ -93,14 +202,20 @@ insert into public.paypal_webhook_events (
     clock_timestamp(), 1, '${newerLeaseToken}', clock_timestamp() + interval '10 minutes'
   );
 `);
+  const fixtureState = await runPsql(container, `
+select (exists(select 1 from public.invoices where id = '${invoiceId}'))::text || '|' ||
+  (select count(*)::text from public.paypal_webhook_events where id in ('${olderEventId}', '${newerEventId}'));
+`);
+  expect(fixtureState === 'true|2', 'race_fixture_created');
 
+  state.phase = 'older_session_start';
   const older = startPsql(container, `
-\\set ON_ERROR_STOP on
+select set_config('application_name', '${olderApplicationName}', false);
 select set_config('request.jwt.claim.role', 'service_role', false);
 select set_config('request.jwt.claims', '{"role":"service_role"}', false);
 begin;
 select id from public.paypal_webhook_events where id = '${olderEventId}' for update;
-\\echo OLDER_EVENT_LOCKED
+\echo OLDER_EVENT_LOCKED
 select pg_sleep(10);
 select public.complete_verified_paypal_webhook(
   '${olderEventId}', '${olderLeaseToken}', 'SYNTHETIC-SNAPSHOT-RACE-01', 'PAID',
@@ -108,33 +223,51 @@ select public.complete_verified_paypal_webhook(
 );
 commit;
 `, 25_000);
+  activeSessions.add(older);
 
-  let newer;
-  try {
-    const olderSessionReady = await waitForOlderSession(container, 5_000);
-    assert.equal(olderSessionReady, true, 'the older PAID transaction did not hold its event lock before the newer refund');
-    newer = await startPsql(container, `
-\\set ON_ERROR_STOP on
+  await requireObservedSession(
+    container, olderApplicationName, 'select pg_sleep(10)%', 5_000, older, 'older', 'older_paid_session_observed',
+  );
+
+  state.phase = 'newer_session_start';
+  const newer = startPsql(container, `
+select set_config('application_name', '${newerApplicationName}', false);
 select set_config('request.jwt.claim.role', 'service_role', false);
 select set_config('request.jwt.claims', '{"role":"service_role"}', false);
 begin;
+select pg_sleep(1);
 select public.complete_verified_paypal_webhook(
   '${newerEventId}', '${newerLeaseToken}', 'SYNTHETIC-SNAPSHOT-RACE-01', 'REFUNDED',
   null, null, '2026-11-07T12:30:00Z', '2026-11-07T12:00:00Z'
 );
 commit;
-`, 15_000).closed;
-  } catch (error) {
-    older.child.kill('SIGKILL');
-    throw error;
-  }
-  const olderResult = await older.closed;
-  assert.equal(newer.code, 0, 'the newer REFUNDED RPC failed');
-  assert.equal(olderResult.code, 0, 'the delayed older PAID RPC failed');
-  assert.match(newer.stdout, /"applied": true/, 'the newer provider version was not applied');
-  assert.match(olderResult.stdout, /"applied": false/, 'the stale PAID provider version was not rejected');
-  assert.match(olderResult.stdout, /"status": "refunded"/, 'the stale RPC did not observe the already-refunded invoice');
+`, 15_000);
+  activeSessions.add(newer);
+  await requireObservedSession(
+    container, newerApplicationName, 'select pg_sleep(1)%', 5_000, newer, 'newer', 'newer_refunded_session_observed',
+  );
 
+  state.phase = 'state_order_assertions';
+  const newerResult = await newer.closed;
+  activeSessions.delete(newer);
+  state.databaseCommand = commandSummary(newerResult);
+  if (newerResult.timedOut) fail('postgres_timeout', null, extractPostgresSqlState(newerResult.stderr));
+  if (newerResult.outputTruncated) fail('harness_failure');
+  if (newerResult.spawnErrorCode) fail('harness_failure');
+  if (newerResult.code !== 0) fail('postgres_error', null, extractPostgresSqlState(newerResult.stderr));
+  expect(/"applied":\s*true/.test(newerResult.stdout), 'newer_refund_applied');
+
+  const olderResult = await older.closed;
+  activeSessions.delete(older);
+  state.databaseCommand = commandSummary(olderResult);
+  if (olderResult.timedOut) fail('postgres_timeout', null, extractPostgresSqlState(olderResult.stderr));
+  if (olderResult.outputTruncated) fail('harness_failure');
+  if (olderResult.spawnErrorCode) fail('harness_failure');
+  if (olderResult.code !== 0) fail('postgres_error', null, extractPostgresSqlState(olderResult.stderr));
+  expect(/"applied":\s*false/.test(olderResult.stdout), 'older_paid_rejected_as_stale');
+  expect(/"status":\s*"refunded"/.test(olderResult.stdout), 'older_rpc_observed_refund');
+
+  state.phase = 'final_integrity';
   const finalState = await runPsql(container, `
 select
   status || '|' || provider_status || '|' ||
@@ -143,24 +276,24 @@ select
   ((select processed_at is not null from public.paypal_webhook_events where id = '${newerEventId}')::text)
 from public.invoices where id = '${invoiceId}';
 `);
-  assert.equal(finalState, 'refunded|REFUNDED|2026-11-07T12:00:00Z|true|true',
-    'the older PAID event overwrote the newer REFUNDED provider snapshot');
-  process.stdout.write(JSON.stringify({
-    result: 'passed',
-    sessions: 2,
-    newerRefundAppliedBeforeOlderPaid: true,
-    olderPaidRejectedAsStale: true,
-    finalState: 'refunded',
-    providerVersion: '2026-11-07T12:00:00Z',
-    bothEventsProcessed: true,
-  }) + '\n');
+  expect(finalState === 'refunded|REFUNDED|2026-11-07T12:00:00Z|true|true', 'race_invoice_and_events_final_state');
+  state.finalIntegrityReached = true;
+  state.phase = 'complete';
+  emit('passed');
 }
 
-main().catch((error) => {
-  process.stderr.write(JSON.stringify({
-    result: 'failed',
-    check: error?.code === 'ERR_ASSERTION' ? 'assertion_failed' : 'harness_failed',
-    message: String(error?.message || 'unknown').replace(/\s+/g, ' ').slice(0, 300),
-  }) + '\n');
+try {
+  await main();
+} catch (error) {
+  const failure = error instanceof ConcurrencyFailure
+    ? error
+    : new ConcurrencyFailure('harness_failure', state.phase, null, null);
+  for (const session of activeSessions) session.child.kill('SIGKILL');
+  for (const session of activeSessions) {
+    const result = await session.closed;
+    state.databaseCommand = commandSummary(result);
+  }
+  activeSessions.clear();
+  emit('failed', failure);
   process.exitCode = 1;
-});
+}

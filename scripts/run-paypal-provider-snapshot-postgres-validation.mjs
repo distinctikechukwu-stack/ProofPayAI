@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parsePgTapDiagnostics } from './paypal-pgtap-diagnostics.mjs';
+import { parsePaypalConcurrencyDiagnostic } from './paypal-concurrency-diagnostics.mjs';
+import { createDisposablePostgresEnvironment } from './paypal-validation-environment.mjs';
 import {
   parseSupabaseContainerState,
   parseSupabaseProjectContainerNames,
@@ -33,22 +35,6 @@ let exitCode = 0;
 
 function emit(phase, result, details = {}) {
   process.stdout.write(JSON.stringify({ phase, result, ...details }) + '\n');
-}
-
-function buildPrivateEnv(home, temp) {
-  const env = Object.fromEntries(['PATH', 'LANG', 'LC_ALL']
-    .filter((key) => typeof process.env[key] === 'string')
-    .map((key) => [key, process.env[key]]));
-  Object.assign(env, {
-    HOME: home,
-    TMPDIR: temp,
-    TMP: temp,
-    TEMP: temp,
-    DOCKER_CONFIG: join(home, '.docker'),
-    CI: 'true',
-    SUPABASE_TELEMETRY_DISABLED: 'true',
-  });
-  return env;
 }
 
 function run(command, args, { cwd, env, input, timeoutMs = 120_000, allowFailure = false } = {}) {
@@ -223,6 +209,9 @@ async function runPsqlPgTapFallback(container, projectId, testFile, hostTestFile
 
 function safeError(error) {
   const child = error?.processResult;
+  if (child && stage === 'two_session_snapshot_race') {
+    return parsePaypalConcurrencyDiagnostic(child);
+  }
   if (child && stage === 'pgtap_suite') {
     return parsePgTapDiagnostics({
       exitStatus: child.code,
@@ -301,7 +290,7 @@ async function main() {
     mkdir(localMigrations, { recursive: true }),
   ]);
   projectId = 'ppv' + randomBytes(7).toString('hex');
-  runEnv = buildPrivateEnv(home, temp);
+  runEnv = createDisposablePostgresEnvironment(process.env, home, temp);
   const config = [
     'project_id = "' + projectId + '"',
     '',
@@ -459,15 +448,39 @@ async function main() {
   });
 
   stage = 'two_session_snapshot_race';
-  await run(process.execPath, [join(root, 'scripts', 'test-paypal-provider-snapshot-concurrency.mjs'), projectId], {
-    cwd: root,
-    env: runEnv,
-    timeoutMs: 30_000,
-  });
+  let raceResult;
+  try {
+    raceResult = await run(process.execPath, [join(root, 'scripts', 'test-paypal-provider-snapshot-concurrency.mjs'), projectId], {
+      cwd: root,
+      env: runEnv,
+      timeoutMs: 30_000,
+    });
+  } catch (error) {
+    if (error?.processResult) error.safeDiagnostic = parsePaypalConcurrencyDiagnostic(error.processResult);
+    throw error;
+  }
+  const raceDiagnostic = parsePaypalConcurrencyDiagnostic(raceResult);
+  if (raceDiagnostic.kind !== 'passed'
+    || raceDiagnostic.process.exitStatus !== 0
+    || raceDiagnostic.process.timedOut
+    || raceDiagnostic.process.signal !== null
+    || raceDiagnostic.process.outputTruncated
+    || raceDiagnostic.sessionsStarted.older !== true
+    || raceDiagnostic.sessionsStarted.newer !== true
+    || raceDiagnostic.finalIntegrityReached !== true
+    || raceDiagnostic.databaseCommand?.exitStatus !== 0
+    || raceDiagnostic.databaseCommand?.timedOut
+    || raceDiagnostic.databaseCommand?.outputTruncated) {
+    const error = new Error('Two-session snapshot concurrency validation did not report a complete pass');
+    error.processResult = raceResult;
+    error.safeDiagnostic = raceDiagnostic;
+    throw error;
+  }
   emit('two_session_snapshot_race', 'passed', {
     databaseSessions: 2,
     newerRefundAppliedBeforeOlderPaid: true,
     olderPaidRejectedAsStale: true,
+    finalIntegrityReached: raceDiagnostic.finalIntegrityReached,
   });
 
   stage = 'final_database_state';
@@ -500,6 +513,7 @@ try {
     diagnostic,
     exitStatus: error?.processResult?.code ?? null,
     timedOut: Boolean(error?.processResult?.timedOut),
+    signal: error?.safeDiagnostic?.process?.signal ?? null,
   });
 } finally {
   if (stackStartAttempted && localRoot && cli && runEnv) {

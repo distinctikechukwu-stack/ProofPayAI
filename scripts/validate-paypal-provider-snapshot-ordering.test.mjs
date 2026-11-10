@@ -3,6 +3,13 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { parsePgTapDiagnostics } from './paypal-pgtap-diagnostics.mjs';
 import {
+  formatPaypalConcurrencyDiagnostic,
+  parsePaypalConcurrencyDiagnostic,
+  PAYPAL_CONCURRENCY_DIAGNOSTIC_PREFIX,
+  extractPostgresSqlState,
+} from './paypal-concurrency-diagnostics.mjs';
+import { createDisposablePostgresEnvironment } from './paypal-validation-environment.mjs';
+import {
   parseSupabaseContainerState,
   parseSupabaseProjectContainerNames,
   parseSupabaseResourceSnapshot,
@@ -162,7 +169,144 @@ test("a deterministic two-session PostgreSQL race covers older PAID after newer 
   assert.match(concurrency, /complete_verified_paypal_webhook/);
   assert.match(concurrency, /pg_sleep/);
   assert.match(concurrency, /provider_updated_at/);
+  assert.match(concurrency, /application_name/);
+  assert.match(concurrency, /sessionsStarted\[sessionKey\] = observed/);
+  assert.match(concurrency, /requireObservedSession\([\s\S]*older_paid_session_observed/);
+  assert.match(concurrency, /requireObservedSession\([\s\S]*newer_refunded_session_observed/);
+  assert.match(concurrency, /extractPostgresSqlState\(result\.stderr\)/);
+  assert.match(concurrency, /if \(result\.outputTruncated\) fail\('harness_failure'\)/);
+  assert.match(concurrency, /finalIntegrityReached = true/);
+  assert.match(concurrency, /formatPaypalConcurrencyDiagnostic/);
+  assert.doesNotMatch(concurrency, /message:\s*String\(error\?\.message/);
   assert.match(postgresRunner, /test-paypal-provider-snapshot-concurrency\.mjs/);
+  assert.match(postgresRunner, /parsePaypalConcurrencyDiagnostic/);
+  assert.match(postgresRunner, /sessionsStarted\.older !== true/);
+  assert.match(postgresRunner, /sessionsStarted\.newer !== true/);
+  assert.match(postgresRunner, /finalIntegrityReached !== true/);
+  assert.match(postgresRunner, /createDisposablePostgresEnvironment\(process\.env, home, temp\)/);
+  assert.match(postgresRunner, /env: runEnv/);
+  assert.doesNotMatch(postgresRunner, /env:\s*process\.env/);
+});
+
+test("concurrency child environment receives only the verified GitHub Actions marker", () => {
+  const parent = {
+    PATH: "synthetic-safe-path",
+    LANG: "en_US.UTF-8",
+    GITHUB_ACTIONS: "true",
+    GITHUB_REF: "refs/heads/codex/cloudflare-paypal-webhooks",
+    SUPABASE_SERVICE_ROLE_KEY: "synthetic-secret",
+    SUPABASE_URL: "synthetic-connection-string",
+    GH_TOKEN: "synthetic-token",
+    NODE_OPTIONS: "--require synthetic-hook",
+  };
+  const env = createDisposablePostgresEnvironment(parent, "C:/private/home", "C:/private/tmp");
+  assert.equal(env.GITHUB_ACTIONS, "true");
+  assert.equal(env.PATH, parent.PATH);
+  assert.equal(env.LANG, parent.LANG);
+  assert.equal(env.CI, "true");
+  for (const key of ["GITHUB_REF", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_URL", "GH_TOKEN", "NODE_OPTIONS", "LC_ALL"]) {
+    assert.equal(Object.hasOwn(env, key), false, `${key} must not be inherited by the child`);
+  }
+  const serialized = JSON.stringify(env);
+  assert.ok(!serialized.includes("synthetic-secret"));
+  assert.ok(!serialized.includes("synthetic-connection-string"));
+  assert.ok(!serialized.includes("synthetic-token"));
+
+  const outsideActions = createDisposablePostgresEnvironment({ ...parent, GITHUB_ACTIONS: "false" }, "C:/private/home", "C:/private/tmp");
+  assert.equal(Object.hasOwn(outsideActions, "GITHUB_ACTIONS"), false);
+});
+
+function concurrencyPayload(overrides = {}) {
+  return {
+    version: 1,
+    result: "passed",
+    category: "completed",
+    phase: "complete",
+    assertionId: null,
+    sqlState: null,
+    databaseSetupStarted: true,
+    sessionsStarted: { older: true, newer: true },
+    finalIntegrityReached: true,
+    databaseCommand: { exitStatus: 0, timedOut: false, signal: null, spawnErrorCode: null, outputTruncated: false },
+    ...overrides,
+  };
+}
+
+test("concurrency diagnostics retain structured pass evidence and process status", () => {
+  const result = parsePaypalConcurrencyDiagnostic({
+    code: 0,
+    signal: null,
+    timedOut: false,
+    outputTruncated: false,
+    stdout: formatPaypalConcurrencyDiagnostic(concurrencyPayload()),
+  });
+  assert.equal(result.kind, "passed");
+  assert.equal(result.process.exitStatus, 0);
+  assert.equal(result.process.timedOut, false);
+  assert.equal(result.databaseSetupStarted, true);
+  assert.deepEqual(result.sessionsStarted, { older: true, newer: true });
+  assert.equal(result.finalIntegrityReached, true);
+});
+
+test("concurrency failure diagnostics report only allowlisted SQL and assertion evidence", () => {
+  const failure = concurrencyPayload({
+    result: "failed",
+    category: "postgres_error",
+    phase: "newer_session_start",
+    assertionId: null,
+    sqlState: "40001",
+    sessionsStarted: { older: true, newer: false },
+    finalIntegrityReached: false,
+    databaseCommand: { exitStatus: 3, timedOut: false, signal: null, spawnErrorCode: null, outputTruncated: false },
+  });
+  const result = parsePaypalConcurrencyDiagnostic({
+    code: 1, signal: "SIGTERM", timedOut: true, outputTruncated: false,
+    stderr: formatPaypalConcurrencyDiagnostic(failure),
+  });
+  assert.equal(result.kind, "postgres_error");
+  assert.equal(result.phase, "newer_session_start");
+  assert.equal(result.sqlState, "40001");
+  assert.equal(result.databaseCommand.exitStatus, 3);
+  assert.deepEqual(result.sessionsStarted, { older: true, newer: false });
+  assert.equal(result.finalIntegrityReached, false);
+  assert.equal(result.process.exitStatus, 1);
+  assert.equal(result.process.signal, "SIGTERM");
+  assert.equal(result.process.timedOut, true);
+
+  const assertionFailure = parsePaypalConcurrencyDiagnostic({
+    code: 1, signal: null, timedOut: false, outputTruncated: false,
+    stderr: formatPaypalConcurrencyDiagnostic(concurrencyPayload({
+      result: "failed", category: "assertion_failure", phase: "state_order_assertions",
+      assertionId: "older_paid_rejected_as_stale", sessionsStarted: { older: true, newer: true },
+      finalIntegrityReached: false,
+    })),
+  });
+  assert.equal(assertionFailure.failedAssertionId, "older_paid_rejected_as_stale");
+});
+
+test("concurrency diagnostic parser safely classifies malformed and truncated output", () => {
+  const privateToken = "synthetic-private-token";
+  const malformed = parsePaypalConcurrencyDiagnostic({
+    code: 1, stderr: `${PAYPAL_CONCURRENCY_DIAGNOSTIC_PREFIX}{\"sql\":\"select '${privateToken}'\",\"error\":\"raw private output\"}`,
+  });
+  assert.equal(malformed.kind, "child_diagnostic_malformed");
+  assert.ok(!JSON.stringify(malformed).includes(privateToken));
+  assert.ok(!JSON.stringify(malformed).includes("raw private output"));
+
+  const truncated = parsePaypalConcurrencyDiagnostic({
+    code: 1, outputTruncated: true,
+    stderr: formatPaypalConcurrencyDiagnostic(concurrencyPayload()),
+  });
+  assert.equal(truncated.kind, "child_diagnostic_truncated");
+  assert.equal(truncated.process.outputTruncated, true);
+  assert.ok(!JSON.stringify(truncated).includes(PAYPAL_CONCURRENCY_DIAGNOSTIC_PREFIX));
+});
+
+test("PostgreSQL verbose errors expose only a recognized SQLSTATE", () => {
+  assert.equal(extractPostgresSqlState("psql: file.sql: ERROR:  40001: could not serialize access\nDETAIL: private row value"), "40001");
+  assert.equal(extractPostgresSqlState("FATAL:  57P03: the database is starting"), "57P03");
+  assert.equal(extractPostgresSqlState("ERROR: private exception 40001 without verbose code"), null);
+  assert.equal(extractPostgresSqlState("ERROR:  PRIVATE: arbitrary value"), null);
 });
 
 test("PostgreSQL CI is read-only and triggers only on the isolated branch", () => {

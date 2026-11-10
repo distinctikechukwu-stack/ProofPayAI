@@ -188,6 +188,18 @@ test("a deterministic two-session PostgreSQL race covers older PAID after newer 
   assert.doesNotMatch(postgresRunner, /env:\s*process\.env/);
 });
 
+test("concurrency SQL templates contain no unescaped psql meta-command lines", () => {
+  const sqlTemplates = [...concurrency.matchAll(/`([\s\S]*?)`/g)].map((match) => match[1]);
+  const metaCommandLine = /^\s*\\(?:[A-Za-z][A-Za-z_]*|[!.?])(?:\s|$)/;
+  const unescapedCommands = sqlTemplates
+    .flatMap((sql) => sql.split(/\r?\n/))
+    .filter((line) => metaCommandLine.test(line));
+
+  assert.ok(sqlTemplates.length > 0, "the race should continue to pass SQL through template literals");
+  assert.deepEqual(unescapedCommands, []);
+  assert.doesNotMatch(concurrency, /OLDER_EVENT_LOCKED/);
+});
+
 test("concurrency child environment receives only the verified GitHub Actions marker", () => {
   const parent = {
     PATH: "synthetic-safe-path",

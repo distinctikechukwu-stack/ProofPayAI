@@ -215,7 +215,6 @@ select set_config('request.jwt.claim.role', 'service_role', false);
 select set_config('request.jwt.claims', '{"role":"service_role"}', false);
 begin;
 select id from public.paypal_webhook_events where id = '${olderEventId}' for update;
-\echo OLDER_EVENT_LOCKED
 select pg_sleep(10);
 select public.complete_verified_paypal_webhook(
   '${olderEventId}', '${olderLeaseToken}', 'SYNTHETIC-SNAPSHOT-RACE-01', 'PAID',

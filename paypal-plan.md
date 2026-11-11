@@ -82,6 +82,16 @@ All paths are relative to the sandbox host above. Credential acquisition and Pay
 | Success | HTTP 200 JSON with current invoice details/status. Use this for refresh and send unknown-outcome reconciliation. |
 | Declared errors | HTTP 400, 401, 403, 404, 500, and default. Error bodies follow PayPal's standard error shape. |
 
+### Invoice payment timestamps (Invoicing v2 response parsing)
+
+PayPal Invoicing v2 exposes recorded payment data under `payments.transactions[]`. Each transaction may include `payment_date_time` (an offset-aware date-time) and/or `payment_date` (a date-only value), as documented in the [payments schema](https://developer.paypal.com/api/invoicing/v2/definitions/payments) and [invoice object](https://developer.paypal.com/api/invoicing/v2/definitions/invoice/). Refunds are separate under `refunds.transactions[]` and use `refund_date`. The API parser reads only the documented payment transaction fields, never refund transaction dates or an undocumented top-level `payment_date`.
+
+`paid_at` is derived only when the fetched provider invoice status is exactly `PAID`; a timestamp, transaction, amount, or webhook payload alone never establishes that state. For `PAID`, the parser takes the latest payment transaction date only when every transaction has usable date information. It prefers valid `payment_date_time` values; if no transaction has a usable date-time and every transaction has a valid date-only value, the latest date is normalized to midnight UTC and represents day precision, not an asserted payment time. Thus an invalid or absent `payment_date_time` may fall back to that transaction's valid `payment_date` only when the complete transaction set has date-only precision. Missing dates, malformed calendar dates without a valid fallback, or a mix of usable date-time and date-only-only transactions leave `paid_at` null rather than guessing which transaction completed payment. `PARTIALLY_PAID`, refund, external-paid, unknown, and other statuses do not produce a new `paid_at` value.
+
+The provider-maintained invoice version remains `detail.metadata.last_update_time` (with the existing compatibility fallback to `update_time`) and is stored separately as `provider_updated_at`. These fields have distinct meanings and are never substituted for one another. This parser correction changes no RPC, database, webhook verification, or payment-state transition contract.
+
+The invoice-history UI displays payment values as a calendar date in UTC, with no time component. This preserves the calendar day for date-only values normalized to midnight UTC and renders genuine timestamp values according to their UTC calendar day regardless of the viewer's browser time zone. Due dates retain their existing browser-local formatting. No precision column or database migration is needed because the UI does not represent the normalized midnight as an exact payment time; genuine provider timestamps remain stored unchanged.
+
 ### 6. Verify incoming webhook signature
 
 | Item | Contract |

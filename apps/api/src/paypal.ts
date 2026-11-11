@@ -36,7 +36,7 @@ const invoiceResponseSchema = z.object({
   }).passthrough().optional(),
   invoice_number: z.string().optional(),
   due_date: z.string().optional(),
-  payment_date: z.string().optional(),
+  payments: z.object({ transactions: z.unknown().optional() }).passthrough().nullable().optional(),
   links: z.array(z.object({ rel: z.string(), href: z.string().url() }).passthrough()).optional(),
 }).passthrough();
 
@@ -123,27 +123,83 @@ function invoiceFromProvider(value: unknown): PaypalInvoice {
     status: invoice.status,
     invoiceNumber: invoice.detail?.invoice_number ?? invoice.invoice_number ?? null,
     invoiceUrl: payerLink?.href?.startsWith("https://") ? payerLink.href : null,
-    paidAt: invoice.payment_date ?? null,
+    paidAt: parseInvoicePaidAt(invoice.status, invoice.payments),
     providerUpdatedAt: parseProviderUpdatedAt(invoice.detail?.metadata?.last_update_time ?? invoice.detail?.metadata?.update_time),
   };
 }
 
+const invoicePaymentsResponseSchema = z.object({
+  transactions: z.unknown().optional(),
+}).passthrough().nullable().optional();
+
+const invoicePaymentTransactionSchema = z.object({
+  payment_date: z.unknown().optional(),
+  payment_date_time: z.unknown().optional(),
+}).passthrough();
+
+function parseInvoicePaidAt(status: string, payments: unknown): string | null {
+  if (status !== "PAID") return null;
+
+  const parsedPayments = invoicePaymentsResponseSchema.safeParse(payments);
+  const transactions = parsedPayments.success ? parsedPayments.data?.transactions : undefined;
+  if (!Array.isArray(transactions) || transactions.length === 0) return null;
+
+  const candidates: Array<{ dateTime: string | null; dateOnly: string | null }> = [];
+  for (const transaction of transactions) {
+    const parsedTransaction = invoicePaymentTransactionSchema.safeParse(transaction);
+    if (!parsedTransaction.success) return null;
+    candidates.push({
+      dateTime: parseValidPayPalDateTime(parsedTransaction.data.payment_date_time),
+      dateOnly: parseValidPayPalDateOnly(parsedTransaction.data.payment_date),
+    });
+  }
+
+  if (candidates.every((candidate) => candidate.dateTime !== null)) {
+    return latestPaymentTimestamp(candidates.map((candidate) => candidate.dateTime as string));
+  }
+
+  // Use date-only precision only when every payment transaction has that same precision.
+  if (candidates.every((candidate) => candidate.dateTime === null && candidate.dateOnly !== null)) {
+    return latestPaymentTimestamp(candidates.map((candidate) => candidate.dateOnly as string));
+  }
+
+  // An incomplete or mixed-precision history cannot identify when the invoice became paid.
+  return null;
+}
+
+function latestPaymentTimestamp(values: string[]): string {
+  return values.reduce((latest, candidate) =>
+    Date.parse(candidate) > Date.parse(latest) ? candidate : latest,
+  );
+}
+
+function parseValidPayPalDateTime(value: unknown): string | null {
+  if (typeof value !== "string" || !z.string().datetime({ offset: true }).safeParse(value).success) return null;
+  if (!isValidPayPalCalendarDate(value.slice(0, 10))) return null;
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : null;
+}
+
+function parseValidPayPalDateOnly(value: unknown): string | null {
+  if (typeof value !== "string" || !isValidPayPalCalendarDate(value)) return null;
+  return value + "T00:00:00.000Z";
+}
+
+function isValidPayPalCalendarDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const daysByMonth = [31, (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return year > 0 && month >= 1 && month <= 12 && day >= 1 && day <= (daysByMonth[month - 1] ?? 0);
+}
+
 function parseProviderUpdatedAt(value: string | undefined): string | null {
   if (value === undefined) return null;
-  if (!z.string().datetime({ offset: true }).safeParse(value).success) {
-    throw new Error("PayPal returned a malformed invoice update timestamp.");
-  }
-  const dateParts = value.slice(0, 10).split("-").map(Number);
-  const datePart = dateParts[0] ?? 0;
-  const monthPart = dateParts[1] ?? 0;
-  const dayPart = dateParts[2] ?? 0;
-  const daysByMonth = [31, (datePart % 4 === 0 && (datePart % 100 !== 0 || datePart % 400 === 0)) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  if (!datePart || !monthPart || !dayPart || dayPart > (daysByMonth[monthPart - 1] ?? 0)) {
-    throw new Error("PayPal returned a malformed invoice update timestamp.");
-  }
-  const milliseconds = Date.parse(value);
-  if (!Number.isFinite(milliseconds)) throw new Error("PayPal returned a malformed invoice update timestamp.");
-  return new Date(milliseconds).toISOString();
+  const parsed = parseValidPayPalDateTime(value);
+  if (parsed === null) throw new Error("PayPal returned a malformed invoice update timestamp.");
+  return parsed;
 }
 
 function canonicalizeJsonValue(value: unknown): unknown {

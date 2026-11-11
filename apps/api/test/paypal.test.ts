@@ -1,6 +1,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../src/app.js";
 import {
+  dateOnlyPaidV2Response,
+  invalidDateTimeWithValidDateV2Response,
+  invalidPaymentDateV2Response,
+  malformedPaymentDateTimeV2Responses,
+  missingPaymentDateV2Response,
+  offsetPaymentDateTimeV2Response,
+  paidMultipleTransactionsV2Response,
+  partiallyPaidV2Response,
+  refundedV2Response,
+} from "./fixtures/paypal-v2-invoice-responses.js";
+import {
   mapPaypalStatus,
   normalizePaypalError,
   PaypalApiError,
@@ -68,6 +79,14 @@ function providerInvoice(overrides: Record<string, unknown> = {}) {
 
 function clientFetch(handler: (url: string, init: RequestInit | undefined) => Promise<Response>): typeof fetch {
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => handler(String(input), init));
+}
+
+async function showInvoiceResponse(response: unknown) {
+  const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+    ? paypalOAuthResponse()
+    : jsonResponse(response));
+  const client = new PaypalClient({ clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", fetch });
+  return client.showInvoice("PAYPAL-INV-1");
 }
 
 function appFixture(args: {
@@ -182,6 +201,94 @@ describe("PayPal Sandbox REST boundary", () => {
     const client = new PaypalClient({ clientId: "sandbox-client-id", clientSecret: "sandbox-client-secret", fetch });
 
     await expect(client.showInvoice("PAYPAL-INV-1")).resolves.toMatchObject({ providerUpdatedAt: null });
+  });
+
+  it("reads the latest documented payment transaction timestamp and keeps provider update time separate", async () => {
+    await expect(showInvoiceResponse(paidMultipleTransactionsV2Response)).resolves.toMatchObject({
+      status: "PAID",
+      paidAt: "2026-11-07T11:30:45.123Z",
+      providerUpdatedAt: "2026-11-07T11:45:00.000Z",
+    });
+  });
+
+  it("uses a stable UTC day boundary only when every paid transaction has date-only precision", async () => {
+    await expect(showInvoiceResponse(dateOnlyPaidV2Response)).resolves.toMatchObject({
+      status: "PAID",
+      paidAt: "2026-11-08T00:00:00.000Z",
+      providerUpdatedAt: "2026-11-08T12:00:00.000Z",
+    });
+  });
+
+  it("falls back from an invalid payment_date_time to a valid date-only value when all transactions have day precision", async () => {
+    await expect(showInvoiceResponse(invalidDateTimeWithValidDateV2Response)).resolves.toMatchObject({
+      status: "PAID",
+      paidAt: "2026-11-07T00:00:00.000Z",
+    });
+  });
+
+  it.each(malformedPaymentDateTimeV2Responses)("rejects a timestamp with $label despite its valid calendar date", async ({ response }) => {
+    await expect(showInvoiceResponse(response)).resolves.toMatchObject({
+      status: "PAID",
+      paidAt: null,
+    });
+  });
+
+  it("normalizes an offset payment timestamp to the same UTC instant", async () => {
+    await expect(showInvoiceResponse(offsetPaymentDateTimeV2Response)).resolves.toMatchObject({
+      status: "PAID",
+      paidAt: "2026-11-07T10:15:00.000Z",
+    });
+  });
+
+  it("does not populate paidAt for a partial payment even when a transaction timestamp exists", async () => {
+    await expect(showInvoiceResponse(partiallyPaidV2Response)).resolves.toMatchObject({
+      status: "PARTIALLY_PAID",
+      paidAt: null,
+    });
+  });
+
+  it("does not use refund transaction dates as payment timestamps", async () => {
+    await expect(showInvoiceResponse(refundedV2Response)).resolves.toMatchObject({
+      status: "REFUNDED",
+      paidAt: null,
+    });
+  });
+
+  it.each([
+    ["a missing timestamp in any payment transaction", missingPaymentDateV2Response],
+    ["invalid timestamps", invalidPaymentDateV2Response],
+    ["mixed timestamp precision", {
+      ...paidMultipleTransactionsV2Response,
+      payments: {
+        transactions: [
+          { type: "PAYPAL", method: "PAYPAL", payment_date_time: "2026-11-07T11:00:00Z" },
+          { type: "EXTERNAL", method: "CHECK", payment_date: "2026-11-08" },
+        ],
+      },
+    }],
+    ["a malformed transaction collection", { ...paidMultipleTransactionsV2Response, payments: { transactions: "invalid" } }],
+  ])("leaves paidAt absent for %s without rejecting provider status", async (_label, response) => {
+    await expect(showInvoiceResponse(response)).resolves.toMatchObject({
+      status: "PAID",
+      paidAt: null,
+    });
+  });
+
+  it("does not use an undocumented root payment_date or infer status from timestamps", async () => {
+    const rootDateOnly = await showInvoiceResponse({
+      ...paidMultipleTransactionsV2Response,
+      payments: undefined,
+      payment_date: "2026-11-07T11:30:45.123Z",
+    });
+    const draftWithPaymentRecord = await showInvoiceResponse({
+      ...partiallyPaidV2Response,
+      status: "DRAFT",
+    });
+
+    expect(rootDateOnly.status).toBe("PAID");
+    expect(rootDateOnly.paidAt).toBeNull();
+    expect(draftWithPaymentRecord.status).toBe("DRAFT");
+    expect(draftWithPaymentRecord.paidAt).toBeNull();
   });
 
   it.each([invoiceWriteScope, generalInvoiceScope, fullInvoiceScope])("accepts the documented invoice write scope %s", async (scope) => {
@@ -598,8 +705,18 @@ describe("PayPal Sandbox REST boundary", () => {
       ? paypalOAuthResponse()
       : jsonResponse(providerInvoice({
         status: "PAID",
-        paid_at: "2026-11-07T11:30:45.123Z",
-        detail: { invoice_number: invoiceNumber, metadata: { last_update_time: "2026-11-07T11:30:45.123Z" } },
+        payments: {
+          paid_amount: { currency_code: "USD", value: "150.00" },
+          transactions: [{
+            type: "PAYPAL",
+            payment_id: "PAYMENT-TEST-005",
+            method: "PAYPAL",
+            payment_date: "2026-11-07",
+            payment_date_time: "2026-11-07T11:30:45.123Z",
+            amount: { currency_code: "USD", value: "150.00" },
+          }],
+        },
+        detail: { invoice_number: invoiceNumber, metadata: { last_update_time: "2026-11-07T11:35:00Z" } },
       })));
     const { appPromise, serviceRpc } = appFixture({
       fetch,
@@ -623,7 +740,8 @@ describe("PayPal Sandbox REST boundary", () => {
       p_invoice_id: invoiceId,
       p_provider_status: "PAID",
       p_invoice_status: "paid",
-      p_provider_updated_at: "2026-11-07T11:30:45.123Z",
+      p_paid_at: "2026-11-07T11:30:45.123Z",
+      p_provider_updated_at: "2026-11-07T11:35:00.000Z",
     }));
   });
 

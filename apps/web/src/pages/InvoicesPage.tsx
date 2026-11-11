@@ -10,6 +10,29 @@ type Action = { kind: "create"; source: "milestone"; candidate: PayableMilestone
   | { kind: "create"; source: "hourly"; candidate: HourlyInvoiceCandidate }
   | { kind: "send" | "reconcile"; invoice: InvoiceRecord };
 
+/** Payment history shows the provider's UTC calendar day without implying a precise time. */
+export function formatPaidDate(value: string): string | null {
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  const timestamp = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.exec(value);
+  const dateParts = dateOnly ?? timestamp;
+  if (!dateParts) return null;
+
+  const year = Number(dateParts[1]);
+  const month = Number(dateParts[2]);
+  const day = Number(dateParts[3]);
+  const daysByMonth = [31, (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (year < 1 || month < 1 || month > 12 || day < 1 || day > (daysByMonth[month - 1] ?? 0)) return null;
+
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.valueOf())) return null;
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(parsed);
+}
+
 export function InvoicesPage() {
   const { user } = useAuth();
   const [data, setData] = useState<InvoicesResponse | null>(null);
@@ -127,7 +150,7 @@ export function InvoicesPage() {
 
           <section className="surface-card invoice-history-card"><SectionHeading title="Invoice history" subtitle="Provider payment state stays independent from milestone approval." />
             {data.invoices.length ? <div className="invoice-history-list">{data.invoices.map((invoice) => <article className="invoice-history-row" key={invoice.id}>
-              <div className="invoice-history-icon"><FileText size={17} /></div><div className="invoice-history-main"><strong>{invoice.projectTitle}</strong><span>{invoice.sourceType === "hourly" ? "Approved hourly work" : "Approved milestone"} · {invoice.invoiceNumber} · {formatMoney(invoice.amountMinor, invoice.currency)}</span><small>{invoice.providerStatus ? `PayPal ${invoice.providerStatus.replaceAll("_", " ").toLowerCase()}` : "Provider state pending"}{invoice.paidAt ? ` · paid ${formatDate(invoice.paidAt)}` : ""}</small></div><StatusPill status={invoice.status.replaceAll("_", " ")} />
+              <div className="invoice-history-icon"><FileText size={17} /></div><div className="invoice-history-main"><strong>{invoice.projectTitle}</strong><span>{invoice.sourceType === "hourly" ? "Approved hourly work" : "Approved milestone"} · {invoice.invoiceNumber} · {formatMoney(invoice.amountMinor, invoice.currency)}</span><small>{invoice.providerStatus ? `PayPal ${invoice.providerStatus.replaceAll("_", " ").toLowerCase()}` : "Provider state pending"}{invoice.paidAt ? ` · paid ${formatPaidDate(invoice.paidAt) ?? "date unavailable"}` : ""}</small></div><StatusPill status={invoice.status.replaceAll("_", " ")} />
               {invoice.invoiceUrl && <a className="button-text invoice-provider-link" href={invoice.invoiceUrl} target="_blank" rel="noreferrer">Open PayPal invoice <ArrowUpRight size={14} /></a>}
               {invoice.status === "draft" && <button className="button-secondary" type="button" onClick={() => { setError(""); setConfirmation({ kind: "send", invoice }); }} disabled={!data.integrations.invoiceOperations || Boolean(busyId)} title={!data.integrations.invoiceOperations ? "Configure PayPal Sandbox and Supabase service access first" : undefined}><Send size={14} /> Send to client</button>}
               {["unknown", "create_pending", "send_pending"].includes(invoice.status) && <button className="button-secondary" type="button" onClick={() => void runAction({ kind: "reconcile", invoice })} disabled={!data.integrations.invoiceOperations || Boolean(busyId)} title={!data.integrations.invoiceOperations ? "Configure PayPal Sandbox and Supabase service access first" : undefined}>{busyId === invoice.id ? "Checking…" : "Reconcile"}</button>}

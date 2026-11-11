@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - codex/cloudflare-paypal-webhooks
+      - codex/proofpay-final-integration-prep
   workflow_dispatch:
 
 permissions:
@@ -15,7 +16,7 @@ concurrency:
 
 jobs:
   validate:
-    if: github.ref == 'refs/heads/codex/cloudflare-paypal-webhooks'
+    if: github.ref == 'refs/heads/codex/cloudflare-paypal-webhooks' || github.ref == 'refs/heads/codex/proofpay-final-integration-prep'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

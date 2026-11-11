@@ -353,10 +353,20 @@ test("PostgreSQL verbose errors expose only a recognized SQLSTATE", () => {
   assert.equal(extractPostgresSqlState("ERROR:  PRIVATE: arbitrary value"), null);
 });
 
-test("PostgreSQL CI is read-only and triggers only on the isolated branch", () => {
+test("Cloudflare webhook validation is manual and branch-gated", () => {
   assert.match(workflow, /workflow_dispatch:/);
-  assert.match(workflow, /push:\s*\n\s+branches:\s*\n\s+- codex\/cloudflare-paypal-webhooks/);
-  assert.match(workflow, /github\.ref == 'refs\/heads\/codex\/cloudflare-paypal-webhooks'/);
+  const pushBranchBlock = workflow.match(/push:\s*\n\s+branches:\s*\n((?:\s+-[^\n]+\n?)+)/)?.[1] ?? "";
+  assert.deepEqual([...pushBranchBlock.matchAll(/^\s+- (.+)$/gm)].map(([, branch]) => branch), [
+    "codex/cloudflare-paypal-webhooks",
+    "codex/proofpay-final-integration-prep",
+  ]);
+  const branchGate = workflow.match(/^\s*if: (.+)$/m)?.[1] ?? "";
+  assert.match(branchGate, /^github\.ref == .+ \|\| github\.ref == .+$/);
+  assert.equal((branchGate.match(/\|\|/g) ?? []).length, 1);
+  assert.deepEqual([...branchGate.matchAll(/refs\/heads\/codex\/[\w-]+/g)].map(([ref]) => ref), [
+    "refs/heads/codex/cloudflare-paypal-webhooks",
+    "refs/heads/codex/proofpay-final-integration-prep",
+  ]);
   assert.match(workflow, /permissions:\s+contents: read/);
   assert.match(workflow, /run-paypal-provider-snapshot-postgres-validation\.mjs/);
   assert.doesNotMatch(workflow, /^\s{0,2}(?:pull_request|schedule):/m);

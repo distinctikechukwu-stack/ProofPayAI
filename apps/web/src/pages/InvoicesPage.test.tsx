@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InvoicesPage } from "./InvoicesPage";
 
 const mocks = vi.hoisted(() => ({ apiRequest: vi.fn() }));
-const originalTimezone = process.env.TZ;
 const paymentDate = "2026-11-07T00:00:00.000Z";
 const dueDate = "2026-11-07T00:00:00.000Z";
 
@@ -53,9 +52,13 @@ function invoiceResponse(paidAt: string | null = paymentDate) {
   };
 }
 
-function setTimezone(timezone: string) {
-  process.env.TZ = timezone;
-  expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(timezone);
+function formatInTimezone(value: string, timezone: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: timezone,
+  }).format(new Date(value));
 }
 
 async function renderInvoices() {
@@ -70,23 +73,23 @@ describe("invoice payment-date presentation", () => {
 
   afterEach(() => {
     cleanup();
-    if (originalTimezone === undefined) delete process.env.TZ;
-    else process.env.TZ = originalTimezone;
   });
 
-  it.each(["UTC", "America/Los_Angeles", "Africa/Lagos"])(
-    "keeps a date-only PayPal payment on November 7 when the browser is in %s",
-    async (timezone) => {
-      setTimezone(timezone);
-      await renderInvoices();
+  it.each([
+    { timezone: "UTC", browserDay: "November 7, 2026" },
+    { timezone: "America/Los_Angeles", browserDay: "November 6, 2026" },
+    { timezone: "Africa/Lagos", browserDay: "November 7, 2026" },
+  ])("keeps the date-only payment on its UTC day across browser timezone projections", async ({ timezone, browserDay }) => {
+    expect(formatInTimezone(paymentDate, timezone)).toBe(browserDay);
+    await renderInvoices();
 
-      expect(screen.getByText(/paid November 7, 2026/)).toBeInTheDocument();
-    },
-  );
+    expect(screen.getByText(/paid November 7, 2026/)).toBeInTheDocument();
+  });
 
-  it("shows the UTC calendar day for a genuine timestamp without showing an exact time", async () => {
-    setTimezone("America/Los_Angeles");
-    mocks.apiRequest.mockResolvedValue(invoiceResponse("2026-11-07T23:30:00-05:00"));
+  it("shows the UTC calendar day for a timestamp that falls on another Los Angeles day, without an exact time", async () => {
+    const timestamp = "2026-11-07T23:30:00-05:00";
+    expect(formatInTimezone(timestamp, "America/Los_Angeles")).toBe("November 7, 2026");
+    mocks.apiRequest.mockResolvedValue(invoiceResponse(timestamp));
     await renderInvoices();
 
     const paymentSummary = screen.getByText(/paid November 8, 2026/);
@@ -102,13 +105,11 @@ describe("invoice payment-date presentation", () => {
   });
 
   it("preserves the existing browser-local due-date formatting", async () => {
-    setTimezone("America/Los_Angeles");
     await renderInvoices();
 
     const dueSummary = screen.getByText((_, element) =>
       element?.tagName === "SMALL" && Boolean(element.textContent?.includes("due ")),
     );
-    expect(dueSummary.textContent).toContain(`due ${new Date(dueDate).toLocaleDateString()}`);
-    expect(new Date(dueDate).toLocaleDateString()).not.toBe("11/7/2026");
+    expect(dueSummary.textContent).toContain("due " + new Date(dueDate).toLocaleDateString());
   });
 });

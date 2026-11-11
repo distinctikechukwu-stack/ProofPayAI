@@ -503,11 +503,13 @@ describe("PayPal Sandbox REST boundary", () => {
     }));
   });
 
-  it("does not trust a payment status in a send response when the authoritative invoice read fails", async () => {
+  it.each(["PAYMENT_PENDING", "PARTIALLY_PAID", "PAID"])(
+    "does not trust %s in a send response when the authoritative invoice read fails",
+    async (unverifiedStatus) => {
     const fetch = clientFetch(async (url) => {
       if (url.endsWith("/v1/oauth2/token")) return paypalOAuthResponse();
       if (url.endsWith("/v2/invoicing/invoices/PAYPAL-INV-1/send")) {
-        return jsonResponse(providerInvoice({ status: "PAID" }), 202);
+        return jsonResponse(providerInvoice({ status: unverifiedStatus }), 202);
       }
       throw new TypeError("temporary invoice read outage");
     });
@@ -541,7 +543,8 @@ describe("PayPal Sandbox REST boundary", () => {
       p_invoice_status: null,
       p_provider_updated_at: null,
     }));
-  });
+    },
+  );
 
   it("passes PayPal's provider timestamp to the direct reconciliation RPC", async () => {
     const unresolved = { ...claimedInvoice, provider_invoice_id: "PAYPAL-INV-1", status: "unknown", provider_status: "FUTURE_STATE" };
@@ -575,6 +578,114 @@ describe("PayPal Sandbox REST boundary", () => {
       p_invoice_status: "paid",
       p_provider_updated_at: "2026-11-07T11:30:45.123Z",
     }));
+  });
+
+  it("reconciles a stored draft from a matching, current provider invoice read", async () => {
+    const localDraft = {
+      ...persistedDraft,
+      status: "draft",
+      provider_status: "DRAFT",
+      provider_updated_at: "2026-11-07T11:00:00Z",
+    };
+    const recordedPaid = {
+      ...localDraft,
+      status: "paid",
+      provider_status: "PAID",
+      provider_updated_at: "2026-11-07T11:30:45.123Z",
+      paid_at: "2026-11-07T11:30:45.123Z",
+    };
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse(providerInvoice({
+        status: "PAID",
+        paid_at: "2026-11-07T11:30:45.123Z",
+        detail: { invoice_number: invoiceNumber, metadata: { last_update_time: "2026-11-07T11:30:45.123Z" } },
+      })));
+    const { appPromise, serviceRpc } = appFixture({
+      fetch,
+      serviceRpc: async (name) => {
+        if (name === "get_paypal_invoice_reconciliation") return { data: { invoice: localDraft, createClaim: null, sendClaim: null }, error: null };
+        if (name === "record_paypal_invoice_state") return { data: { invoice: recordedPaid, snapshotRequired: true, snapshotApplied: true }, error: null };
+        return { data: null, error: null };
+      },
+    });
+    app = await appPromise;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/invoices/${invoiceId}/reconcile`,
+      headers: { authorization: "Bearer user-access-token" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ outcome: "reconciled", invoice: { id: invoiceId, status: "paid", providerStatus: "PAID" } });
+    expect(serviceRpc).toHaveBeenCalledWith("record_paypal_invoice_state", expect.objectContaining({
+      p_invoice_id: invoiceId,
+      p_provider_status: "PAID",
+      p_invoice_status: "paid",
+      p_provider_updated_at: "2026-11-07T11:30:45.123Z",
+    }));
+  });
+
+  it("keeps a stored draft unknown when manual reconciliation rejects a stale paid snapshot", async () => {
+    const localDraft = {
+      ...persistedDraft,
+      status: "draft",
+      provider_status: "DRAFT",
+      provider_updated_at: "2026-11-07T11:30:45.123Z",
+    };
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse(providerInvoice({ status: "PAID", detail: { metadata: { last_update_time: "2026-11-07T11:00:00Z" } } })));
+    const { appPromise, serviceRpc } = appFixture({
+      fetch,
+      serviceRpc: async (name) => {
+        if (name === "get_paypal_invoice_reconciliation") return { data: { invoice: localDraft, createClaim: null, sendClaim: null }, error: null };
+        if (name === "record_paypal_invoice_state") return { data: {
+          invoice: localDraft,
+          snapshotRequired: true,
+          snapshotApplied: false,
+          snapshotRejectionReason: "stale_provider_version",
+        }, error: null };
+        return { data: null, error: null };
+      },
+    });
+    app = await appPromise;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/invoices/${invoiceId}/reconcile`,
+      headers: { authorization: "Bearer user-access-token" },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ outcome: "unknown", invoice: { status: "draft" } });
+    expect(response.json().message).toContain("conflicts with the current invoice version");
+    expect(serviceRpc).toHaveBeenCalledWith("record_paypal_invoice_state", expect.any(Object));
+  });
+
+  it("does not record a reconciliation snapshot if PayPal returns another invoice identity", async () => {
+    const localDraft = { ...persistedDraft, status: "draft", provider_status: "DRAFT" };
+    const fetch = clientFetch(async (url) => url.endsWith("/v1/oauth2/token")
+      ? paypalOAuthResponse()
+      : jsonResponse(providerInvoice({ id: "PAYPAL-INV-OTHER", status: "PAID" })));
+    const { appPromise, serviceRpc } = appFixture({
+      fetch,
+      serviceRpc: async (name) => name === "get_paypal_invoice_reconciliation"
+        ? { data: { invoice: localDraft, createClaim: null, sendClaim: null }, error: null }
+        : { data: null, error: null },
+    });
+    app = await appPromise;
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/invoices/${invoiceId}/reconcile`,
+      headers: { authorization: "Bearer user-access-token" },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toMatchObject({ outcome: "unknown", invoice: { status: "draft" } });
+    expect(serviceRpc).not.toHaveBeenCalledWith("record_paypal_invoice_state", expect.any(Object));
   });
 
   it("does not report reconciliation success when the RPC rejects an old provider version", async () => {

@@ -136,7 +136,8 @@ create function pg_temp.apply_snapshot(
   p_provider_status text,
   p_provider_updated_at timestamptz,
   p_observed_at timestamptz,
-  p_legacy_seven_argument_call boolean default false
+  p_legacy_seven_argument_call boolean default false,
+  p_event_payload_status text default null
 )
 returns jsonb
 language plpgsql
@@ -147,7 +148,7 @@ begin
   event_payload := jsonb_build_object(
     'id', p_provider_event_id,
     'event_type', 'INVOICING.INVOICE.UPDATED',
-    'resource', jsonb_build_object('id', p_invoice_id, 'status', p_provider_status)
+    'resource', jsonb_build_object('id', p_invoice_id, 'status', coalesce(p_event_payload_status, p_provider_status))
   );
   insert into public.paypal_webhook_events (
     id, provider_event_id, event_type, resource_id, payload, verified_at,
@@ -182,6 +183,46 @@ join public.milestones as milestone on milestone.project_id = project.id
 where project.id = '00000000-0000-4000-8000-000000000900'
   and milestone.sequence = 1;
 
+select set_config('request.jwt.claim.role', 'service_role', true);
+select set_config('request.jwt.claims', '{"role":"service_role"}', true);
+
+select proofpay_validation.add_project(
+  '00000000-0000-4000-8000-000000001000',
+  '00000000-0000-4000-8000-000000001010',
+  'fixed', 'in_progress', array['approved', 'approved', 'approved', 'approved'], array[2500, 2500, 2500, 2500]::bigint[]
+);
+
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claims', '{"role":"authenticated"}', true);
+select extensions.throws_ok(
+  $$select public.finalize_paypal_operation(
+    '00000000-0000-4000-8000-000000009901',
+    '00000000-0000-4000-8000-000000000002',
+    'completed'
+  )$$,
+  '42501',
+  'Only the claiming freelancer can finalize this invoice operation.',
+  'an authenticated caller cannot finalize a provider invoice operation'
+);
+select extensions.throws_ok(
+  $$select public.record_paypal_invoice_state(
+    '00000000-0000-4000-8000-000000009300',
+    '00000000-0000-4000-8000-000000000002',
+    'PAID', 'paid'
+  )$$,
+  '42501',
+  'Only a verified server-side reconciliation can update PayPal state.',
+  'an authenticated caller cannot record provider payment state'
+);
+select extensions.throws_ok(
+  $$select public.complete_verified_paypal_webhook(
+    '00000000-0000-4000-8000-000000009902',
+    '00000000-0000-4000-8000-000000009903'
+  )$$,
+  '42501',
+  'This function accepts only the server webhook worker.',
+  'an authenticated caller cannot complete a verified webhook event'
+);
 select set_config('request.jwt.claim.role', 'service_role', true);
 select set_config('request.jwt.claims', '{"role":"service_role"}', true);
 
@@ -794,6 +835,250 @@ select extensions.ok(
     'refunded', 'paid', 'REFUNDED', 'PAID'
   ),
   'provider time remains distinct from a later local observation time'
+);
+
+insert into migration20_operation_test (name, invoice_id, claim_id, receipt)
+select 'gap_finalize_create',
+       (receipt->'invoice'->>'id')::uuid,
+       (receipt->'claim'->>'id')::uuid,
+       receipt
+from (
+  select public.begin_paypal_invoice_create(
+    (select id from public.milestones where project_id = '00000000-0000-4000-8000-000000001000' and sequence = 1),
+    'TEST-GAP-CREATE-1',
+    '00000000-0000-4000-8000-000000000002'
+  ) as receipt
+) as created;
+select public.finalize_paypal_operation(
+  claim_id, '00000000-0000-4000-8000-000000000002', 'completed',
+  'SYNTHETIC-GAP-FINALIZE-01', 'DRAFT', 'draft',
+  'https://www.sandbox.paypal.com/invoice/p/synthetic', null,
+  '2026-11-07T16:00:30Z', '2026-11-07T16:00:00Z'
+)
+from migration20_operation_test where name = 'gap_finalize_create';
+select extensions.ok(
+  (select invoice.status = 'draft'
+      and invoice.provider_status = 'DRAFT'
+      and invoice.provider_invoice_id = 'SYNTHETIC-GAP-FINALIZE-01'
+      and invoice.provider_updated_at = '2026-11-07T16:00:00Z'::timestamptz
+      and invoice.provider_observed_at = '2026-11-07T16:00:30Z'::timestamptz
+      and claim.state = 'completed'
+   from public.invoices as invoice
+   join public.paypal_operation_claims as claim on claim.invoice_id = invoice.id
+   where invoice.id = (select invoice_id from migration20_operation_test where name = 'gap_finalize_create')
+     and claim.id = (select claim_id from migration20_operation_test where name = 'gap_finalize_create')),
+  'the finalization fixture stores the verified DRAFT provider snapshot and completed create claim'
+);
+
+insert into migration20_operation_test (name, invoice_id, claim_id, receipt)
+select 'gap_finalize_send',
+       (receipt->'invoice'->>'id')::uuid,
+       (receipt->'claim'->>'id')::uuid,
+       receipt
+from (
+  select public.begin_paypal_invoice_send(
+    (select invoice_id from migration20_operation_test where name = 'gap_finalize_create'),
+    '00000000-0000-4000-8000-000000000002'
+  ) as receipt
+) as sending;
+select extensions.ok(
+  (select receipt->>'claimed' = 'true'
+      and receipt->'invoice'->>'status' = 'send_pending'
+      and receipt->'claim'->>'state' = 'claimed'
+   from migration20_operation_test where name = 'gap_finalize_send'),
+  'the send operation claim still advances a provider-DRAFT invoice to send_pending'
+);
+select extensions.ok(
+  (select (public.finalize_paypal_operation(
+    claim_id, '00000000-0000-4000-8000-000000000002', 'completed',
+    'SYNTHETIC-GAP-FINALIZE-01', 'PAYMENT_PENDING', 'payment_pending',
+    'https://www.sandbox.paypal.com/invoice/p/synthetic', null,
+    '2026-11-07T16:02:00Z', '2026-11-07T16:01:00Z'
+  )->>'snapshotApplied')::boolean
+   from migration20_operation_test where name = 'gap_finalize_send'),
+  'finalize_paypal_operation accepts a newer provider-confirmed DRAFT-to-PAYMENT_PENDING transition'
+);
+select extensions.ok(
+  (select invoice.status = 'payment_pending'
+      and invoice.provider_status = 'PAYMENT_PENDING'
+      and invoice.provider_invoice_id = 'SYNTHETIC-GAP-FINALIZE-01'
+      and invoice.provider_updated_at = '2026-11-07T16:01:00Z'::timestamptz
+      and invoice.provider_observed_at = '2026-11-07T16:02:00Z'::timestamptz
+      and claim.state = 'completed'
+      and claim.operation = 'send'
+   from public.invoices as invoice
+   join public.paypal_operation_claims as claim on claim.invoice_id = invoice.id
+   where invoice.id = (select invoice_id from migration20_operation_test where name = 'gap_finalize_send')
+     and claim.id = (select claim_id from migration20_operation_test where name = 'gap_finalize_send')),
+  'finalization preserves provider identity, provider and observation versions, and the completed send claim'
+);
+
+insert into public.invoices (
+  id, project_id, milestone_id, created_by, provider_invoice_id, provider_invoice_number,
+  status, amount_minor, currency, accepted_agreement_version_id,
+  provider_status, provider_observed_at, provider_updated_at
+)
+select '00000000-0000-4000-8000-000000009401', project.id, milestone.id,
+       '00000000-0000-4000-8000-000000000002', 'SYNTHETIC-GAP-RECORD-PARTIAL-01',
+       'TEST-GAP-RECORD-PARTIAL', 'draft', milestone.amount_minor, milestone.currency,
+       milestone.agreement_version_id, 'DRAFT', '2026-11-07T16:00:30Z', '2026-11-07T16:00:00Z'
+from public.projects as project
+join public.milestones as milestone on milestone.project_id = project.id
+where project.id = '00000000-0000-4000-8000-000000001000' and milestone.sequence = 2;
+select extensions.ok(
+  (public.record_paypal_invoice_state(
+    '00000000-0000-4000-8000-000000009401',
+    '00000000-0000-4000-8000-000000000002',
+    'PARTIALLY_PAID', 'partially_paid', null, null,
+    '2026-11-07T16:02:00Z', '2026-11-07T16:01:00Z'
+  )->>'snapshotApplied')::boolean,
+  'record_paypal_invoice_state accepts a current provider-confirmed DRAFT-to-PARTIALLY_PAID transition'
+);
+select extensions.ok(
+  (select status = 'partially_paid'
+      and provider_status = 'PARTIALLY_PAID'
+      and provider_invoice_id = 'SYNTHETIC-GAP-RECORD-PARTIAL-01'
+      and provider_updated_at = '2026-11-07T16:01:00Z'::timestamptz
+      and provider_observed_at = '2026-11-07T16:02:00Z'::timestamptz
+      and paid_at is null
+   from public.invoices where id = '00000000-0000-4000-8000-000000009401'),
+  'partial payment preserves invoice identity and provider-observed timestamps without fabricating paid_at'
+);
+select extensions.ok(
+  not (public.record_paypal_invoice_state(
+    '00000000-0000-4000-8000-000000009401',
+    '00000000-0000-4000-8000-000000000002',
+    'PAID', 'paid', null, '2026-11-07T16:03:00Z',
+    '2026-11-07T16:04:00Z', '2026-11-07T16:00:00Z'
+  )->>'snapshotApplied')::boolean,
+  'record_paypal_invoice_state still rejects a stale payment snapshot after the new DRAFT transition'
+);
+select extensions.ok(
+  not (public.record_paypal_invoice_state(
+    '00000000-0000-4000-8000-000000009401',
+    '00000000-0000-4000-8000-000000000002',
+    'PAID', 'paid', null, '2026-11-07T16:03:00Z',
+    '2026-11-07T16:04:00Z', '2026-11-07T16:01:00Z'
+  )->>'snapshotApplied')::boolean,
+  'record_paypal_invoice_state rejects a conflicting status at an equal provider version after the new DRAFT transition'
+);
+select extensions.is(
+  (select status || '|' || provider_status || '|' || provider_updated_at::text || '|' || provider_invoice_id
+   from public.invoices where id = '00000000-0000-4000-8000-000000009401'),
+  'partially_paid|PARTIALLY_PAID|2026-11-07 16:01:00+00|SYNTHETIC-GAP-RECORD-PARTIAL-01'::text,
+  'stale and equal-version conflicts preserve the last accepted partial-payment snapshot'
+);
+
+insert into public.invoices (
+  id, project_id, milestone_id, created_by, provider_invoice_id, provider_invoice_number,
+  status, amount_minor, currency, accepted_agreement_version_id,
+  provider_status, provider_observed_at, provider_updated_at
+)
+select '00000000-0000-4000-8000-000000009402', project.id, milestone.id,
+       '00000000-0000-4000-8000-000000000002', 'SYNTHETIC-GAP-RECORD-PAID-01',
+       'TEST-GAP-RECORD-PAID', 'draft', milestone.amount_minor, milestone.currency,
+       milestone.agreement_version_id, 'DRAFT', '2026-11-07T16:00:30Z', '2026-11-07T16:00:00Z'
+from public.projects as project
+join public.milestones as milestone on milestone.project_id = project.id
+where project.id = '00000000-0000-4000-8000-000000001000' and milestone.sequence = 3;
+select extensions.ok(
+  (public.record_paypal_invoice_state(
+    '00000000-0000-4000-8000-000000009402',
+    '00000000-0000-4000-8000-000000000002',
+    'PAID', 'paid', null, '2026-11-07T16:03:00Z',
+    '2026-11-07T16:04:00Z', '2026-11-07T16:03:00Z'
+  )->>'snapshotApplied')::boolean,
+  'record_paypal_invoice_state accepts a current provider-confirmed DRAFT-to-PAID transition'
+);
+select extensions.ok(
+  (select status = 'paid'
+      and provider_status = 'PAID'
+      and provider_invoice_id = 'SYNTHETIC-GAP-RECORD-PAID-01'
+      and provider_updated_at = '2026-11-07T16:03:00Z'::timestamptz
+      and provider_observed_at = '2026-11-07T16:04:00Z'::timestamptz
+      and paid_at = '2026-11-07T16:03:00Z'::timestamptz
+   from public.invoices where id = '00000000-0000-4000-8000-000000009402'),
+  'direct paid reconciliation preserves linked invoice identity and provider timestamps'
+);
+
+insert into public.invoices (
+  id, project_id, milestone_id, created_by, provider_invoice_id, provider_invoice_number,
+  status, amount_minor, currency, accepted_agreement_version_id,
+  provider_status, provider_observed_at, provider_updated_at
+)
+select '00000000-0000-4000-8000-000000009403', project.id, milestone.id,
+       '00000000-0000-4000-8000-000000000002', 'SYNTHETIC-GAP-WEBHOOK-PAID-01',
+       'TEST-GAP-WEBHOOK-PAID', 'draft', milestone.amount_minor, milestone.currency,
+       milestone.agreement_version_id, 'DRAFT', '2026-11-07T16:00:30Z', '2026-11-07T16:00:00Z'
+from public.projects as project
+join public.milestones as milestone on milestone.project_id = project.id
+where project.id = '00000000-0000-4000-8000-000000001000' and milestone.sequence = 4;
+select extensions.ok(
+  (pg_temp.apply_snapshot(
+    '00000000-0000-4000-8000-000000009951', '00000000-0000-4000-8000-000000009952',
+    'SYNTHETIC-EVENT-GAP-WEBHOOK-PAID', 'SYNTHETIC-GAP-WEBHOOK-PAID-01', 'PAID',
+    '2026-11-07T16:05:00Z', '2026-11-07T16:06:00Z', false, 'DRAFT'
+  )->>'applied')::boolean,
+  'the verified webhook completion applies the fetched PAID snapshot when the signed event payload says DRAFT'
+);
+select extensions.ok(
+  (select invoice.status = 'paid'
+      and invoice.provider_status = 'PAID'
+      and invoice.provider_invoice_id = 'SYNTHETIC-GAP-WEBHOOK-PAID-01'
+      and invoice.provider_updated_at = '2026-11-07T16:05:00Z'::timestamptz
+      and invoice.provider_observed_at = '2026-11-07T16:06:00Z'::timestamptz
+      and invoice.paid_at = '2026-11-07T16:05:00Z'::timestamptz
+      and event.payload->'resource'->>'status' = 'DRAFT'
+      and event.processed_at is not null
+      and event.processing_error is null
+   from public.invoices as invoice
+   join public.paypal_webhook_events as event
+     on event.resource_id = invoice.provider_invoice_id
+   where invoice.id = '00000000-0000-4000-8000-000000009403'
+     and event.id = '00000000-0000-4000-8000-000000009951'),
+  'webhook payment state and timestamps come from the current provider read, not payload status'
+);
+select extensions.ok(
+  (public.complete_verified_paypal_webhook(
+    '00000000-0000-4000-8000-000000009951',
+    '00000000-0000-4000-8000-000000009952',
+    'SYNTHETIC-GAP-WEBHOOK-PAID-01', 'PAID', null,
+    '2026-11-07T16:05:00Z', '2026-11-07T16:06:00Z', '2026-11-07T16:05:00Z'
+  )->>'duplicate')::boolean
+  and (select status = 'paid' and provider_status = 'PAID'
+           and provider_updated_at = '2026-11-07T16:05:00Z'::timestamptz
+       from public.invoices where id = '00000000-0000-4000-8000-000000009403'),
+  'duplicate webhook completion is idempotent and cannot alter the persisted provider snapshot'
+);
+
+insert into public.paypal_webhook_events (
+  id, provider_event_id, event_type, resource_id, payload, verified_at,
+  attempt_count, lease_token, lease_expires_at
+) values (
+  '00000000-0000-4000-8000-000000009953', 'SYNTHETIC-EVENT-GAP-IDENTITY',
+  'INVOICING.INVOICE.UPDATED', 'SYNTHETIC-GAP-WEBHOOK-PAID-01',
+  '{"id":"SYNTHETIC-EVENT-GAP-IDENTITY","event_type":"INVOICING.INVOICE.UPDATED","resource":{"id":"SYNTHETIC-GAP-WEBHOOK-PAID-01","status":"DRAFT"}}'::jsonb,
+  clock_timestamp(), 1, '00000000-0000-4000-8000-000000009954', clock_timestamp() + interval '10 minutes'
+);
+select extensions.throws_ok(
+  $$select public.complete_verified_paypal_webhook(
+    '00000000-0000-4000-8000-000000009953',
+    '00000000-0000-4000-8000-000000009954',
+    'SYNTHETIC-OTHER-INVOICE', 'PAID', null,
+    '2026-11-07T16:05:00Z', '2026-11-07T16:06:00Z', '2026-11-07T16:05:00Z'
+  )$$,
+  '22023',
+  'The PayPal invoice snapshot does not match the verified event.',
+  'webhook reconciliation rejects a provider invoice identity that differs from the verified event'
+);
+select extensions.ok(
+  (select event.processed_at is null
+      and invoice.status = 'paid'
+      and invoice.provider_invoice_id = 'SYNTHETIC-GAP-WEBHOOK-PAID-01'
+   from public.paypal_webhook_events as event
+   join public.invoices as invoice on invoice.provider_invoice_id = event.resource_id
+   where event.id = '00000000-0000-4000-8000-000000009953'),
+  'rejected webhook identity leaves the event pending and the linked invoice unchanged'
 );
 
 select * from extensions.finish();

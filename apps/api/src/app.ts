@@ -357,7 +357,7 @@ async function finalizePaypalOperation(
   providerSnapshotIsAuthoritative = false,
 ) {
   const reportedStatus = invoice ? providerInvoiceStatus(invoice) : null;
-  const paymentStates = new Set(["partially_paid", "paid", "paid_external", "partially_refunded", "refunded", "refunded_external"]);
+  const paymentStates = new Set(["payment_pending", "partially_paid", "paid", "paid_external", "partially_refunded", "refunded", "refunded_external"]);
   const unverifiedPaymentState = reportedStatus !== null && paymentStates.has(reportedStatus) && !providerSnapshotIsAuthoritative;
   const snapshot = unverifiedPaymentState ? undefined : invoice;
   return serviceClient.rpc("finalize_paypal_operation", {
@@ -1790,13 +1790,18 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     const invoiceRow = contextResult.data.invoice;
     const createClaim = isRecord(contextResult.data.createClaim) ? contextResult.data.createClaim : null;
     const sendClaim = isRecord(contextResult.data.sendClaim) ? contextResult.data.sendClaim : null;
-    if (invoiceRow.status !== "unknown" && !createClaim && !sendClaim) {
+    if (invoiceRow.status !== "unknown" && invoiceRow.status !== "draft" && !createClaim && !sendClaim) {
       return { invoice: toInvoiceRecord(invoiceRow), outcome: "current" };
     }
 
     if (!createClaim && !sendClaim && typeof invoiceRow.provider_invoice_id === "string") {
       try {
         const current = await paypalClient.showInvoice(invoiceRow.provider_invoice_id);
+        if (current.id !== invoiceRow.provider_invoice_id) return reply.code(202).send({
+          invoice: toInvoiceRecord(invoiceRow),
+          outcome: "unknown",
+          message: "PayPal returned a different invoice identity; no provider state was recorded.",
+        });
         const recorded = await serviceClient.rpc("record_paypal_invoice_state", {
           p_invoice_id: request.params.invoiceId,
           p_actor_id: context.userId,

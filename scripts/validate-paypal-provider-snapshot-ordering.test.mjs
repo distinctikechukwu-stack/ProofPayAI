@@ -69,7 +69,9 @@ test("provider version ordering rejects stale, versionless, and equal-version co
 });
 
 test("the status allowlist blocks illegal regressions and preserves documented payment and refund paths", () => {
-  assert.match(normalized, /when p_current_status = 'draft' then p_next_status in \('sent', 'scheduled', 'unknown'\)/);
+  assert.match(normalized, /when p_current_status = 'draft' then\s+p_next_status in \('sent', 'scheduled', 'payment_pending', 'partially_paid', 'paid', 'unknown'\)/);
+  const draftTransition = normalized.match(/when p_current_status = 'draft' then\s+p_next_status in \(([^)]+)\)/)?.[1] ?? "";
+  assert.doesNotMatch(draftTransition, /cancelled|paid_external|partially_refunded|refunded/);
   assert.match(normalized, /when p_current_status in \('sent', 'payment_pending'\) then p_next_status in/);
   assert.match(normalized, /when p_current_status = 'paid' then p_next_status in \('partially_refunded', 'refunded'\)/);
   assert.match(normalized, /when p_current_status = 'refunded' then false/);
@@ -117,6 +119,9 @@ test("finalize and direct reconciliation RPCs reject stale snapshots without fal
   assert.match(sqlTest, /legacy seven-argument reconciliation calls still resolve/);
   assert.match(sqlTest, /legacy nine-argument finalization calls still resolve/);
   assert.match(sqlTest, /4::smallint[\s\S]*?the provider timestamp is a trailing optional reconciliation argument/);
+  assert.match(readFileSync(new URL("../apps/api/src/app.ts", import.meta.url), "utf8"), /invoiceRow\.status !== "unknown" && invoiceRow\.status !== "draft"/);
+  assert.match(readFileSync(new URL("../apps/api/src/app.ts", import.meta.url), "utf8"), /current\.id !== invoiceRow\.provider_invoice_id/);
+  assert.match(readFileSync(new URL("../apps/api/src/app.ts", import.meta.url), "utf8"), /"payment_pending", "partially_paid", "paid"/);
 });
 
 test("completion RPC keeps service-role authorization, fixed search path, leases, and seven-argument compatibility", () => {
@@ -149,6 +154,21 @@ test("pgTAP exercises the real completion RPC, trigger, grants, search paths, an
   assert.match(sqlTest, /finalize_paypal_operation rejects conflicting status changes/);
 });
 
+test("pgTAP covers trusted DRAFT-to-payment snapshots through all three RPC paths", () => {
+  assert.match(sqlTest, /finalize_paypal_operation accepts a newer provider-confirmed DRAFT-to-PAYMENT_PENDING transition/);
+  assert.match(sqlTest, /record_paypal_invoice_state accepts a current provider-confirmed DRAFT-to-PARTIALLY_PAID transition/);
+  assert.match(sqlTest, /record_paypal_invoice_state accepts a current provider-confirmed DRAFT-to-PAID transition/);
+  assert.match(sqlTest, /verified webhook completion applies the fetched PAID snapshot when the signed event payload says DRAFT/);
+  assert.match(sqlTest, /duplicate webhook completion is idempotent/);
+  assert.match(sqlTest, /authenticated caller cannot finalize/);
+  assert.match(sqlTest, /authenticated caller cannot record provider payment state/);
+  assert.match(sqlTest, /authenticated caller cannot complete a verified webhook/);
+  assert.match(sqlTest, /rejects a stale payment snapshot after the new DRAFT transition/);
+  assert.match(sqlTest, /rejects a conflicting status at an equal provider version after the new DRAFT transition/);
+  assert.match(sqlTest, /a newer PAID snapshot cannot overwrite REFUNDED/);
+  assert.match(sqlTest, /webhook reconciliation rejects a provider invoice identity/);
+});
+
 test("create and retry pgTAP scenarios use an eligible milestone isolated from snapshot fixtures", () => {
   const createMilestones = [...sqlTest.matchAll(/public\.begin_paypal_invoice_create\(\s*\(select id from public\.milestones where project_id = '([^']+)' and sequence = 1\)/gi)]
     .map((match) => match[1]);
@@ -156,6 +176,7 @@ test("create and retry pgTAP scenarios use an eligible milestone isolated from s
     "00000000-0000-4000-8000-000000000400",
     "00000000-0000-4000-8000-000000000400",
     "00000000-0000-4000-8000-000000000600",
+    "00000000-0000-4000-8000-000000001000",
   ]);
   assert.match(postMigrationFixture, /add_project\(\s*'00000000-0000-4000-8000-000000000400',[\s\S]*?'fixed', 'in_progress', array\['approved'\], array\[10000\]::bigint\[\]/i);
   assert.match(sqlTest, /the create\/retry fixture milestone is eligible and has no existing invoice/);

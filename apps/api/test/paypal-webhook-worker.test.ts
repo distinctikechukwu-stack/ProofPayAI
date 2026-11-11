@@ -88,6 +88,31 @@ describe("durable PayPal webhook worker", () => {
     expect(durableQueue).toHaveLength(0);
   });
 
+  it("reconciles the fetched provider state instead of the webhook payload status", async () => {
+    const providerUpdatedAt = "2026-11-07T11:30:45.123Z";
+    const { worker, service, paypal } = makeWorker(async (name) => {
+      if (name === "claim_paypal_webhook_event") return { data: claimedEvent(), error: null };
+      return { data: { duplicate: false, matched: true, applied: true, status: "paid" }, error: null };
+    }, async (id) => ({
+      id,
+      status: "PAID",
+      invoiceUrl: null,
+      paidAt: "2026-11-07T11:30:45.123Z",
+      providerUpdatedAt,
+    }));
+
+    await worker.processAvailable();
+
+    expect(paypal.showInvoice).toHaveBeenCalledWith(providerInvoiceId);
+    expect(claimedEvent().payload.resource.status).toBe("SENT");
+    expect(service.rpc).toHaveBeenCalledWith("complete_verified_paypal_webhook", expect.objectContaining({
+      p_provider_invoice_id: providerInvoiceId,
+      p_provider_status: "PAID",
+      p_paid_at: "2026-11-07T11:30:45.123Z",
+      p_provider_updated_at: providerUpdatedAt,
+    }));
+  });
+
   it("allows Cron recovery to cap each pass to one durable event", async () => {
     let claims = 0;
     const { worker, service, paypal } = makeWorker(async (name) => {

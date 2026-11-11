@@ -53,8 +53,11 @@ as $$
     when p_current_status is null or p_next_status is null then false
     when p_current_status = p_next_status then true
     -- PayPal documents that a sent invoice cannot return to DRAFT and that a
-    -- draft cannot be cancelled. A draft may be sent or scheduled.
-    when p_current_status = 'draft' then p_next_status in ('sent', 'scheduled', 'unknown')
+    -- draft cannot be cancelled. A fresh provider detail read can skip the
+    -- intermediate SENT snapshot when the invoice has already reached a
+    -- payment state; provider-version ordering is checked before this helper.
+    when p_current_status = 'draft' then
+      p_next_status in ('sent', 'scheduled', 'payment_pending', 'partially_paid', 'paid', 'unknown')
     when p_current_status = 'scheduled' then p_next_status in ('sent', 'cancelled', 'unknown')
     -- Sent/Unpaid invoices remain open through pending, partial, and full
     -- payments. The API supports cancelling sent invoices and refund states.

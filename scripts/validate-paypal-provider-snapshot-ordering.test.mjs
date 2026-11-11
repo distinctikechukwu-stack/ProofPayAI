@@ -9,6 +9,7 @@ import {
   extractPostgresSqlState,
 } from './paypal-concurrency-diagnostics.mjs';
 import { createDisposablePostgresEnvironment } from './paypal-validation-environment.mjs';
+import { isAllowedPaypalValidationRef, PAYPAL_VALIDATION_GITHUB_REFS } from './paypal-validation-branch.mjs';
 import {
   parseSupabaseContainerState,
   parseSupabaseProjectContainerNames,
@@ -238,23 +239,39 @@ test("concurrency child environment receives only the verified GitHub Actions ma
     LANG: "en_US.UTF-8",
     GITHUB_ACTIONS: "true",
     GITHUB_REF: "refs/heads/codex/cloudflare-paypal-webhooks",
+    GITHUB_TOKEN: "synthetic-github-token",
     SUPABASE_SERVICE_ROLE_KEY: "synthetic-secret",
+    SUPABASE_ACCESS_TOKEN: "synthetic-supabase-token",
     SUPABASE_URL: "synthetic-connection-string",
     GH_TOKEN: "synthetic-token",
+    DATABASE_URL: "postgresql://synthetic-user:synthetic-password@localhost/private",
+    PAYPAL_SANDBOX_CLIENT_SECRET: "synthetic-paypal-secret",
+    GROQ_API_KEY: "synthetic-groq-key",
+    CF_API_TOKEN: "synthetic-cloudflare-token",
     NODE_OPTIONS: "--require synthetic-hook",
+    UNSAFE_INHERITED: "synthetic-untrusted-value",
   };
   const env = createDisposablePostgresEnvironment(parent, "C:/private/home", "C:/private/tmp");
   assert.equal(env.GITHUB_ACTIONS, "true");
   assert.equal(env.PATH, parent.PATH);
   assert.equal(env.LANG, parent.LANG);
   assert.equal(env.CI, "true");
-  for (const key of ["GITHUB_REF", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_URL", "GH_TOKEN", "NODE_OPTIONS", "LC_ALL"]) {
+  for (const key of [
+    "GITHUB_REF", "GITHUB_TOKEN", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_ACCESS_TOKEN", "SUPABASE_URL",
+    "GH_TOKEN", "DATABASE_URL", "PAYPAL_SANDBOX_CLIENT_SECRET", "GROQ_API_KEY", "CF_API_TOKEN",
+    "NODE_OPTIONS", "LC_ALL", "UNSAFE_INHERITED",
+  ]) {
     assert.equal(Object.hasOwn(env, key), false, `${key} must not be inherited by the child`);
   }
   const serialized = JSON.stringify(env);
   assert.ok(!serialized.includes("synthetic-secret"));
   assert.ok(!serialized.includes("synthetic-connection-string"));
   assert.ok(!serialized.includes("synthetic-token"));
+  assert.ok(!serialized.includes("synthetic-password"));
+  assert.ok(!serialized.includes("synthetic-paypal-secret"));
+  assert.ok(!serialized.includes("synthetic-groq-key"));
+  assert.ok(!serialized.includes("synthetic-cloudflare-token"));
+  assert.ok(!serialized.includes("synthetic-untrusted-value"));
 
   const outsideActions = createDisposablePostgresEnvironment({ ...parent, GITHUB_ACTIONS: "false" }, "C:/private/home", "C:/private/tmp");
   assert.equal(Object.hasOwn(outsideActions, "GITHUB_ACTIONS"), false);
@@ -356,26 +373,59 @@ test("PostgreSQL verbose errors expose only a recognized SQLSTATE", () => {
 test("Cloudflare webhook validation is manual and branch-gated", () => {
   assert.match(workflow, /workflow_dispatch:/);
   const pushBranchBlock = workflow.match(/push:\s*\n\s+branches:\s*\n((?:\s+-[^\n]+\n?)+)/)?.[1] ?? "";
-  assert.deepEqual([...pushBranchBlock.matchAll(/^\s+- (.+)$/gm)].map(([, branch]) => branch), [
-    "codex/cloudflare-paypal-webhooks",
-    "codex/proofpay-final-integration-prep",
-  ]);
-  const branchGate = workflow.match(/^\s*if: (.+)$/m)?.[1] ?? "";
-  assert.match(branchGate, /^github\.ref == .+ \|\| github\.ref == .+$/);
-  assert.equal((branchGate.match(/\|\|/g) ?? []).length, 1);
-  assert.deepEqual([...branchGate.matchAll(/refs\/heads\/codex\/[\w-]+/g)].map(([ref]) => ref), [
+  assert.deepEqual(PAYPAL_VALIDATION_GITHUB_REFS, [
     "refs/heads/codex/cloudflare-paypal-webhooks",
     "refs/heads/codex/proofpay-final-integration-prep",
   ]);
+  const approvedBranches = PAYPAL_VALIDATION_GITHUB_REFS.map((ref) => ref.replace(/^refs\/heads\//, ""));
+  assert.deepEqual([...pushBranchBlock.matchAll(/^\s+- (.+)$/gm)].map(([, branch]) => branch), approvedBranches);
+  const branchGate = workflow.match(/^\s*if: (.+)$/m)?.[1] ?? "";
+  assert.match(branchGate, /^github\.ref == .+ \|\| github\.ref == .+$/);
+  assert.equal((branchGate.match(/\|\|/g) ?? []).length, 1);
+  assert.deepEqual([...branchGate.matchAll(/refs\/heads\/codex\/[\w-]+/g)].map(([ref]) => ref), PAYPAL_VALIDATION_GITHUB_REFS);
   assert.match(workflow, /permissions:\s+contents: read/);
   assert.match(workflow, /run-paypal-provider-snapshot-postgres-validation\.mjs/);
   assert.doesNotMatch(workflow, /^\s{0,2}(?:pull_request|schedule):/m);
   assert.doesNotMatch(workflow, /secrets\./i);
   assert.match(postgresRunner, /assert.equal\(names.length, 20/);
   assert.match(postgresRunner, /GITHUB_ACTIONS/);
-  assert.match(postgresRunner, /GITHUB_REF/);
+  assert.match(postgresRunner, /isAllowedPaypalValidationRef\(process\.env\.GITHUB_REF\)/);
+  assert.match(postgresRunner, /assert\.equal\(process\.env\.GITHUB_ACTIONS, 'true'/);
+  assert.match(postgresRunner, /assert\.equal\(process\.platform, 'linux'/);
   assert.match(postgresRunner, /linkedProjectMetadataCopied: false/);
   assert.match(postgresRunner, /environmentFilesCopied: false/);
+});
+
+test("PostgreSQL validation branch allowlist accepts both approved branch refs", () => {
+  assert.equal(isAllowedPaypalValidationRef("refs/heads/codex/cloudflare-paypal-webhooks"), true);
+  assert.equal(isAllowedPaypalValidationRef("refs/heads/codex/proofpay-final-integration-prep"), true);
+});
+
+test("PostgreSQL validation branch allowlist rejects unapproved branches", () => {
+  for (const ref of [
+    "refs/heads/master",
+    "refs/heads/codex/proofpay-staging-release",
+    "refs/heads/codex/proofpay-final-integration-prep-extra",
+    "refs/pull/12/merge",
+  ]) {
+    assert.equal(isAllowedPaypalValidationRef(ref), false, `${ref} must remain outside the allowlist`);
+  }
+});
+
+test("PostgreSQL validation branch allowlist rejects missing and malformed refs", () => {
+  for (const ref of [undefined, null, "", "codex/proofpay-final-integration-prep", " refs/heads/codex/proofpay-final-integration-prep", 42]) {
+    assert.equal(isAllowedPaypalValidationRef(ref), false);
+  }
+});
+
+test("PostgreSQL validation runner preserves isolated local-only database safeguards", () => {
+  assert.match(postgresRunner, /\['db', 'reset', '--local', '--no-seed'\]/);
+  assert.match(postgresRunner, /\['db', 'push', '--local'\]/);
+  assert.match(postgresRunner, /createDisposablePostgresEnvironment\(process\.env, home, temp\)/);
+  assert.match(postgresRunner, /env: runEnv/);
+  assert.doesNotMatch(postgresRunner, /env:\s*process\.env/);
+  assert.doesNotMatch(postgresRunner, /--linked|--db-url/);
+  assert.doesNotMatch(workflow, /secrets\./i);
 });
 
 test("isolated PostgreSQL validation enables startup debug without workflow secrets", () => {

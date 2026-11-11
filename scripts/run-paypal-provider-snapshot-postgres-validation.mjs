@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parsePgTapDiagnostics } from './paypal-pgtap-diagnostics.mjs';
 import { parsePaypalConcurrencyDiagnostic } from './paypal-concurrency-diagnostics.mjs';
+import { isAllowedPaypalValidationRef } from './paypal-validation-branch.mjs';
 import { createDisposablePostgresEnvironment } from './paypal-validation-environment.mjs';
 import {
   parseSupabaseContainerState,
@@ -264,7 +265,7 @@ async function verifyRollback(container, failedSql, migrationCount, expectedBase
 async function main() {
   assert.equal(process.platform, 'linux', 'the PostgreSQL validation runner requires the isolated Ubuntu CI job');
   assert.equal(process.env.GITHUB_ACTIONS, 'true', 'run only through the isolated GitHub Actions workflow');
-  assert.equal(process.env.GITHUB_REF, 'refs/heads/codex/cloudflare-paypal-webhooks', 'run only for the isolated webhook branch');
+  assert.ok(isAllowedPaypalValidationRef(process.env.GITHUB_REF), 'run only for an explicitly allowed PostgreSQL validation branch');
   const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   assert.equal(manifest.devDependencies?.supabase, supabaseVersion, 'the reviewed Supabase CLI version must remain pinned');
   assert.equal((await readFile(join(root, '.node-version'), 'utf8')).trim(), expectedNodeVersion);

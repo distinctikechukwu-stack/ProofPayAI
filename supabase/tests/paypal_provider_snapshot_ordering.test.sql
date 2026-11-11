@@ -137,7 +137,8 @@ create function pg_temp.apply_snapshot(
   p_provider_updated_at timestamptz,
   p_observed_at timestamptz,
   p_legacy_seven_argument_call boolean default false,
-  p_event_payload_status text default null
+  p_event_payload_status text default null,
+  p_paid_at timestamptz default null
 )
 returns jsonb
 language plpgsql
@@ -163,7 +164,7 @@ begin
     );
   end if;
   return public.complete_verified_paypal_webhook(
-    p_event_id, p_lease_token, p_invoice_id, p_provider_status, null, null, p_observed_at, p_provider_updated_at
+    p_event_id, p_lease_token, p_invoice_id, p_provider_status, null, p_paid_at, p_observed_at, p_provider_updated_at
   );
 end;
 $test$;
@@ -1017,7 +1018,7 @@ select extensions.ok(
   (pg_temp.apply_snapshot(
     '00000000-0000-4000-8000-000000009951', '00000000-0000-4000-8000-000000009952',
     'SYNTHETIC-EVENT-GAP-WEBHOOK-PAID', 'SYNTHETIC-GAP-WEBHOOK-PAID-01', 'PAID',
-    '2026-11-07T16:05:00Z', '2026-11-07T16:06:00Z', false, 'DRAFT'
+    '2026-11-07T16:05:00Z', '2026-11-07T16:06:00Z', false, 'DRAFT', '2026-11-07T16:04:30Z'
   )->>'applied')::boolean,
   'the verified webhook completion applies the fetched PAID snapshot when the signed event payload says DRAFT'
 );
@@ -1027,7 +1028,7 @@ select extensions.ok(
       and invoice.provider_invoice_id = 'SYNTHETIC-GAP-WEBHOOK-PAID-01'
       and invoice.provider_updated_at = '2026-11-07T16:05:00Z'::timestamptz
       and invoice.provider_observed_at = '2026-11-07T16:06:00Z'::timestamptz
-      and invoice.paid_at = '2026-11-07T16:05:00Z'::timestamptz
+      and invoice.paid_at = '2026-11-07T16:04:30Z'::timestamptz
       and event.payload->'resource'->>'status' = 'DRAFT'
       and event.processed_at is not null
       and event.processing_error is null

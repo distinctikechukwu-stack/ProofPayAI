@@ -169,6 +169,16 @@ test("pgTAP covers trusted DRAFT-to-payment snapshots through all three RPC path
   assert.match(sqlTest, /webhook reconciliation rejects a provider invoice identity/);
 });
 
+test("webhook SQL helper passes paid_at separately without shifting legacy calls", () => {
+  const helper = sqlTest.match(/create function pg_temp\.apply_snapshot\([\s\S]*?\$test\$;/)?.[0] ?? "";
+  assert.match(helper, /p_legacy_seven_argument_call boolean default false,\s*p_event_payload_status text default null,\s*p_paid_at timestamptz default null/);
+  const legacyCall = helper.match(/if p_legacy_seven_argument_call then([\s\S]*?)end if;/)?.[1] ?? "";
+  assert.match(legacyCall, /complete_verified_paypal_webhook\(\s*p_event_id, p_lease_token, p_invoice_id, p_provider_status, null, null, p_observed_at\s*\)/);
+  assert.match(helper, /p_event_id, p_lease_token, p_invoice_id, p_provider_status, null, p_paid_at, p_observed_at, p_provider_updated_at/);
+  assert.match(sqlTest, /'2026-11-07T16:05:00Z', '2026-11-07T16:06:00Z', false, 'DRAFT', '2026-11-07T16:04:30Z'/);
+  assert.match(sqlTest, /invoice\.paid_at = '2026-11-07T16:04:30Z'::timestamptz/);
+});
+
 test("create and retry pgTAP scenarios use an eligible milestone isolated from snapshot fixtures", () => {
   const createMilestones = [...sqlTest.matchAll(/public\.begin_paypal_invoice_create\(\s*\(select id from public\.milestones where project_id = '([^']+)' and sequence = 1\)/gi)]
     .map((match) => match[1]);

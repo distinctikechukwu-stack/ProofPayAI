@@ -126,7 +126,12 @@ export function ProfilePage() {
     let active = true;
     void apiRequest<ProfilePayload>("/api/profile").then((data) => {
       if (!active) return;
-      const displayName = text(data.account?.display_name) || text(user.user_metadata?.display_name);
+      const providerName = [user.user_metadata?.display_name, user.user_metadata?.full_name, user.user_metadata?.name]
+        .map(text)
+        .find((value) => value.trim())
+        || user.email?.split("@")[0]
+        || "";
+      const displayName = text(data.account?.display_name) || providerName;
       const avatarUrl = text(data.account?.avatar_url);
       setAccount({ displayName, avatarUrl });
       const savedRoles = data.roles.filter((role) => ["freelancer", "client", "admin"].includes(role));

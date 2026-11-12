@@ -4,6 +4,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 const AppShell = lazy(() => import("./components/AppShell").then((module) => ({ default: module.AppShell })));
 const AuthPage = lazy(() => import("./pages/AuthPage").then((module) => ({ default: module.AuthPage })));
 const RecoveryPage = lazy(() => import("./pages/AuthPage").then((module) => ({ default: module.RecoveryPage })));
+const AuthCallbackPage = lazy(() => import("./pages/AuthCallbackPage").then((module) => ({ default: module.AuthCallbackPage })));
 const DashboardPage = lazy(() => import("./pages/DashboardPage").then((module) => ({ default: module.DashboardPage })));
 const AnalyticsPage = lazy(() => import("./pages/AnalyticsPage").then((module) => ({ default: module.AnalyticsPage })));
 const TimelinePage = lazy(() => import("./pages/TimelinePage").then((module) => ({ default: module.TimelinePage })));
@@ -26,6 +27,7 @@ export default function App() {
     <Route path="/" element={<LandingPage />} />
     <Route path="/signin" element={<AuthPage mode="signin" />} />
     <Route path="/signup" element={<AuthPage mode="signup" />} />
+    <Route path="/auth/callback" element={<AuthCallbackPage />} />
     <Route path="/recover" element={<RecoveryPage />} />
     <Route path="/freelancers/:slug" element={<PublicFreelancerPage />} />
     <Route path="/app" element={<AppShell />}>

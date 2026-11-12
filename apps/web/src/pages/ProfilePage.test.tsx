@@ -76,6 +76,21 @@ afterEach(() => {
 });
 
 describe("freelancer profile serialization", () => {
+  it("uses Google name metadata for first-time profile onboarding without assigning roles", async () => {
+    useAuthMock.mockReturnValue({
+      user: { id: "google-user", email: "judge@example.invalid", user_metadata: { full_name: "Judge Example" } },
+      configured: true,
+    });
+    apiRequestMock.mockResolvedValue({ account: null, roles: [], freelancer: null, portfolio: [], client: null });
+
+    render(<MemoryRouter><ProfilePage /></MemoryRouter>);
+
+    expect(await screen.findByLabelText("Display name")).toHaveValue("Judge Example");
+    expect(screen.getByRole("checkbox", { name: /freelancer/i })).not.toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /client/i })).not.toBeChecked();
+    expect(screen.getByText(/administrator access is granted separately/i)).toBeInTheDocument();
+  });
+
   it("matches the strict API schema and converts the hourly preference to minor units", () => {
     const body = toFreelancerProfileRequestBody(privateDraft);
 

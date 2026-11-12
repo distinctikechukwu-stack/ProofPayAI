@@ -10,7 +10,7 @@ export function AuthPage({ mode }: { mode: "signin" | "signup" }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const navigate = useNavigate();
-  const { configured, loading: authLoading, signIn, signUp } = useAuth();
+  const { configured, loading: authLoading, signIn, signInWithGoogle, signUp } = useAuth();
   const isSignUp = mode === "signup";
 
   const submitAccount = async (event: FormEvent<HTMLFormElement>) => {
@@ -39,10 +39,33 @@ export function AuthPage({ mode }: { mode: "signin" | "signup" }) {
     }
   };
 
+  const continueWithGoogle = async () => {
+    if (!configured || busy || authLoading) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await signInWithGoogle();
+      if (result.error) {
+        setMessage(result.error);
+        setBusy(false);
+      }
+      // Supabase Auth redirects through /auth/callback and restores its session there.
+    } catch {
+      setMessage("Google sign-in could not be started. Please try again.");
+      setBusy(false);
+    }
+  };
+
   return (
     <main className="auth-page">
       <section className="auth-story"><Link to="/" className="auth-logo"><Brand inverse /></Link><div className="auth-story-body"><span className="eyebrow">BETTER WORK, CLEARER TERMS</span><h1>Let the good work speak for itself.</h1><p>Keep the agreement, milestones, and payment steps together so everyone knows where things stand.</p><div className="auth-testimonial"><span className="auth-quote-mark">“</span><p>Clear scope makes the best client relationships even better.</p><span>ProofPay AI · Product principle</span></div></div><div className="auth-story-foot"><LockKeyhole size={14} /> Secure project workflows, built for independent work</div></section>
       <section className="auth-form-side"><div className="auth-topline"><Link to="/" className="auth-back"><ArrowLeft size={15} /> Back to home</Link><span>Already exploring? <Link to="/app">Open demo</Link></span></div><div className="auth-form-wrap"><span className="auth-form-tag"><span /> {configured ? "SECURE ACCOUNT ACCESS" : "AUTHENTICATION NOT CONFIGURED"}</span><h2>{isSignUp ? "Create your account" : "Welcome back"}</h2><p className="auth-subtitle">{isSignUp ? "Set up your workspace to bring your projects together." : "Sign in to pick up where your project left off."}</p>{!configured && <div className="auth-preview-note"><strong>Supabase Auth is not configured</strong><span>Account forms are unavailable. Continue to the clearly labeled sample workspace without submitting credentials.</span></div>}
+        {configured && <>
+          <button className="button-secondary auth-google-button" type="button" onClick={() => void continueWithGoogle()} disabled={busy || authLoading}>
+            <span className="auth-google-mark" aria-hidden="true">G</span>{busy ? "Connecting to Google…" : "Continue with Google"}
+          </button>
+          <div className="auth-divider"><span /> <small>OR CONTINUE WITH EMAIL</small> <span /></div>
+        </>}
         <form className="auth-form" onSubmit={submitAccount}>
           {isSignUp && <label>Full name<input name="name" autoComplete="name" placeholder="Your name" minLength={2} required disabled={!configured} /></label>}
           <label>Email address<input name="email" type="email" autoComplete="email" placeholder="you@example.com" required disabled={!configured} /></label>

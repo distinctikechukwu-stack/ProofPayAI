@@ -13,6 +13,7 @@ interface AuthContextValue {
   session: Session | null;
   passwordRecovery: boolean;
   signIn(email: string, password: string): Promise<{ error: string | null }>;
+  signInWithGoogle(): Promise<{ error: string | null }>;
   signUp(name: string, email: string, password: string): Promise<{ error: string | null; needsEmailVerification: boolean }>;
   signOut(): Promise<{ error: string | null }>;
   sendRecovery(email: string): Promise<{ error: string | null }>;
@@ -76,6 +77,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!client) return { error: configured ? "Supabase Auth is still initializing." : "Supabase Auth is not configured." };
       const { error } = await client.auth.signInWithPassword({ email, password });
       return { error: safeAuthError(error) };
+    },
+    async signInWithGoogle() {
+      if (!client) return { error: configured ? "Supabase Auth is still initializing." : "Supabase Auth is not configured." };
+      try {
+        const { error } = await client.auth.signInWithOAuth({
+          provider: "google",
+          options: {
+            redirectTo: `${window.location.origin}/auth/callback`,
+            scopes: "openid email profile",
+          },
+        });
+        return { error: error ? "Google sign-in could not be started. Please try again." : null };
+      } catch {
+        return { error: "Google sign-in could not be started. Please try again." };
+      }
     },
     async signUp(name, email, password) {
       if (!client) return { error: configured ? "Supabase Auth is still initializing." : "Supabase Auth is not configured.", needsEmailVerification: false };

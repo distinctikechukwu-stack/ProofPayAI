@@ -1,6 +1,6 @@
 # ProofPay AI — evidence-aligned demo script
 
-**Target run time:** 3 minutes
+**Target run time:** 2 minutes 45 seconds (under the three-minute limit)
 **Mode:** Existing fictional Staging accounts and records only. No new records, AI requests, invoices, sends, payments, or webhook actions are part of this prepared script.
 
 ## Before recording
@@ -11,13 +11,13 @@
 - The historical USD 600 Sandbox invoice was sent once and is recorded as SENT. Open it read-only if it remains available. Do not recreate or resend it. Do not associate it with the USD 100 project unless its project linkage is independently confirmed.
 - The owner-confirmed hosted pass covers login, dashboard, and existing projects only. Do not imply full marketplace, hosted Groq, or webhook/payment acceptance from that limited check.
 
-## 0:00–0:20 — The problem
+## 0:00–0:15 — The problem
 
 **Show:** ProofPay AI landing page.
 
 **Say:** “Freelance work depends on shared expectations. ProofPay keeps the profile, project terms, evidence, review decisions, and invoice state together, so a sent invoice is never mistaken for verified payment.”
 
-## 0:20–0:55 — Marketplace and the two roles
+## 0:15–0:40 — Marketplace and the two roles
 
 **Show:** Existing freelancer profile/service listing and client opportunities or an existing job/proposal. Switch to the second authorized account in a separate browser profile if the project context is not available in one session.
 
@@ -25,7 +25,7 @@
 
 **Do not:** Create a new job, proposal, service, or account during this prepared read-only demo.
 
-## 0:55–1:40 — Agreement, milestones, and evidence
+## 0:40–1:20 — Agreement, milestones, and evidence
 
 **Show:** Existing shared project, accepted agreement, milestone amounts/statuses, and the existing submission/review history. If available, show the submitted evidence link and freelancer summary on the client side, then the client's revision feedback on the freelancer side.
 
@@ -33,7 +33,7 @@
 
 **Do not:** Approve, reject, resubmit, or change a milestone during this recording. Only describe the two $40/$60 approvals if they are still visible in the selected fixture.
 
-## 1:40–2:15 — AI assistance with a human decision
+## 1:20–1:55 — AI assistance with a human decision
 
 **Show:** A previously captured, sanitized Groq result or its test evidence. The recorded local run generated ten milestones totaling 60,000 cents using openai/gpt-oss-20b; suggestions remained drafts for human review.
 
@@ -41,7 +41,7 @@
 
 **Do not:** Make a new hosted Groq request during this recording unless it has separate authorization. Do not describe the historical local response as a result from the currently deployed Staging service.
 
-## 2:15–2:45 — PayPal Sandbox invoice state
+## 1:55–2:25 — PayPal Sandbox invoice state
 
 **Show:** The existing invoice's read-only state, if available.
 
@@ -49,7 +49,7 @@
 
 **Do not:** Recreate or resend the invoice, make a payment, register a webhook, or change payment state. The Cloudflare webhook path is currently known to fail in Staging, and payment reconciliation is not verified.
 
-## 2:45–3:00 — Close
+## 2:25–2:45 — Close
 
 **Say:** “ProofPay AI makes project decisions easier to audit. Our isolated automated suite validates the payment and concurrency safeguards; hosted payment reconciliation remains a clearly identified next step.”
 

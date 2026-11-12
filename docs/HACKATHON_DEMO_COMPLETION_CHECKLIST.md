@@ -1,57 +1,62 @@
 # ProofPay AI — hackathon final submission checklist
 
 **Updated:** November 12, 2026
-**Reviewed candidate:** **codex/proofpay-final-integration-prep** at **23194d8caffb46378b7fe1dddb710410ac3c8f82**
+**Reviewed application candidate:** `codex/proofpay-final-integration-prep` at `23194d8caffb46378b7fe1dddb710410ac3c8f82`
+**Prior local docs checkpoint:** `1aee833eb494dea58993d5c690650c3c8507828f` (documentation-only parent of this finalization)
 **Successful isolated validation:** [GitHub Actions run #13](https://github.com/distinctikechukwu-stack/ProofPayAI/actions/runs/43056263683)
 
-## Critical submission blockers
+## Submission blockers to close
 
-- [ ] Treat payment reconciliation as deferred. The API status endpoint reported webhook readiness false, and the Cloudflare Staging webhook path has a known HTTP 400 failure. Do not claim signed delivery, PAID state, or successful automatic reconciliation.
-- [ ] Complete the broader hosted marketplace and Groq acceptance pass, including draft suggestion edit/save/reload. The owner-confirmed hosted check covers login, dashboard, and existing projects only.
+- [ ] **Owner/license:** The owner confirms individual creator ownership and the public creator name DeBest Tech Solutions; the root MIT attribution is finalized. Verify GitHub detects the license on the repository’s default branch. Confirm third-party assets and dependencies retain their own notices and permissions.
+- [ ] **Public video:** Record a functioning on-device demo under 3 minutes, upload it publicly to YouTube, and paste that URL into the Devpost form. Avoid unlicensed music/third-party material and hide account details.
+- [ ] **Public source/default view:** Publish the reviewed candidate/docs with a normal fast-forward update. Make the candidate the repository default branch, or otherwise provide a branch-specific source link and ensure the default branch’s visible README/license are not stale. Do not merge or rewrite branch histories just for appearance.
+- [ ] **Judge access:** Confirm the hosted URL is available to judges. If authentication is required, decide on a safe, dedicated fictional judge-account access method; never put administrator, provider, or service-role credentials in public source.
+- [ ] **Devpost form:** Submit the final description, actual live/source/video URLs, and list of tools with their actual uses. Check all links after publishing.
+- [ ] **Eligibility/ownership:** Confirm entrant age of majority, jurisdiction and conflict eligibility; appoint an authorized representative if submitting for a team/organization; explain significant work completed during the event period; confirm any third-party source, images, video, or assets are permissioned.
+- [ ] **Deadline:** Official rules list November 12, 2026 at 12:00 PM Pacific (20:00 UTC / 21:00 WAT). Confirm the live Devpost countdown/form before submission and submit with time to spare.
 
-## Evidence already recorded
+## Already supported by evidence
 
-- [x] Owner confirmed on November 12 that both Render services use commit 23194d8, hosted login/dashboard/existing projects work, and all 20 Supabase Staging migrations are applied. This review did not independently inspect the Render dashboard or query migration history.
-- [x] Integrated candidate commit is identified above; no branch, source, database, provider, or hosting change was made for this submission-preparation task.
-- [x] GitHub Actions run #13 passed 376 automated tests: shared 24, API 195, web 34, and static validators 123.
-- [x] Run #13 passed workspace TypeScript checks, webhook-test typecheck, production build, Wrangler dry run, and Linux Worker HTTP/Cron smoke.
-- [x] In the isolated CI environment, migrations 1–20 applied; Migration 20 rollback/application passed; project-completion pgTAP passed 32/32; payment snapshot-ordering pgTAP passed 84/84; total 116/116.
-- [x] A real two-session PostgreSQL test proved an older PAID snapshot cannot overwrite a newer REFUNDED snapshot. Final integrity checks and isolated stack cleanup passed.
-- [x] Read-only public smoke on November 12: frontend root, sign-in, and projects SPA paths returned HTTP 200; API /health and /api/status returned HTTP 200; frontend-origin Authorization preflight returned 204; unauthenticated profile returned 401.
-- [x] API status booleans were Supabase=true, AI=true, PayPal=true, PayPal webhook=false. These report configured state only; they do not prove authenticated Supabase, hosted Groq, or PayPal operation.
-- [x] Earlier owner-led tests verified fictional two-account project access, accepted agreement, $40/$60 milestone approvals, profile persistence, and authenticated profile/project requests. Local regression tests cover deliverable/revision visibility; hosted post-fix display is unverified.
-- [x] A historical local Groq test generated ten draft milestones totaling 60,000 cents with openai/gpt-oss-20b; a separate real local scope-analysis result passed schema/evidence checks and persisted its audit.
-- [x] A historical fictional USD 600 PayPal Sandbox invoice was created once, read back as DRAFT, then sent once. Its recorded state is SENT. Do not recreate or resend it.
-- [x] The APIMatic Context Plugin was used during development and documented. The app uses direct PayPal Invoicing v2 REST because the inspected generated SDK map had no Invoicing resource; no generated SDK invoice call is claimed.
+- [x] Owner confirms both Render Staging services use commit 23194d8; hosted login, dashboard, and existing project screens work.
+- [x] Owner confirms all 20 Supabase Staging migrations are applied.
+- [x] GitHub Actions #13 passed 376 tests, TypeScript checks, webhook-test typecheck, production build, Wrangler dry run, and Linux Worker HTTP/Cron smoke.
+- [x] Isolated PostgreSQL CI applied migrations 1–20, passed Migration 20 rollback/application, project-completion pgTAP 32/32 and provider-snapshot pgTAP 84/84 (116/116), two-session concurrency, final integrity checks, and cleanup.
+- [x] Earlier owner-led Staging tests verified two fictional participants, an accepted agreement, approved USD 40/USD 60 milestones, freelancer profile persistence, and authenticated profile/project reads.
+- [x] Historical local Groq result: ten structured draft milestones totaling 60,000 cents using `openai/gpt-oss-20b`; local scope-analysis evidence passed schema/citation validation.
+- [x] Historical fictional USD 600 Sandbox invoice was created once, read back as DRAFT, then sent once; its recorded provider/local state is SENT.
+- [x] APIMatic Context Plugin use is documented accurately as development-time guidance/testing. No generated SDK Invoicing operation is used at runtime.
 
-## Feature status
+## Feature status and evidence boundary
 
 | Feature | Status | Evidence boundary |
 | --- | --- | --- |
-| Authentication and participant authorization | Implemented; owner confirms hosted login works; prior Staging tests passed | This review made no authenticated API call; full marketplace authorization checks remain in the acceptance pass. |
-| Profiles, listings, jobs, proposals, hiring | Implemented with shared/API/UI tests; some prior Staging persistence checks passed | Complete hosted marketplace journey on the final candidate remains unverified. |
-| Agreements, milestones, evidence, review history | Implemented; prior fictional two-account workflow and regression tests | Do not change the existing accepted agreement or approved milestone records during demo preparation. |
-| Project completion and payment-state ordering | Implemented; isolated PostgreSQL validated; Staging migration 20 owner-confirmed applied | Existing project completion status still follows explicit review/recheck rules and remains separate from payment state. |
-| Groq milestone and scope assistance | Implemented; historical real local results verified | Hosted inference on the final candidate and suggestion edit/save/reload remain unverified. |
-| PayPal Sandbox invoice create/send | Implemented; one historical invoice was created and sent | No payment or authoritative payment reconciliation is verified. SENT must not be presented as PAID. |
-| PayPal/Cloudflare webhook processing | Implemented and CI tested | Hosted Cloudflare path has known HTTP 400; do not activate or claim ready. |
-| Deployment and public endpoints | Owner-confirmed deployed on 23194d8; public endpoints responded | Owner confirms login/dashboard/existing projects work. Broader marketplace and provider acceptance remains outstanding. |
+| Authentication and project authorization | Hosted login and authenticated profile/project reads confirmed in earlier Staging tests | Do not publish reusable private credentials. |
+| Profiles, listings, jobs, proposals, hiring | Implemented and automated coverage exists; some earlier hosted flows were inspected | Complete end-to-end marketplace acceptance on this candidate remains unverified. |
+| Agreements, milestones, evidence, review history | Existing fictional $100 project has accepted agreement and $40/$60 milestones approved; code/regression tests cover evidence and feedback | It remains In Progress; do not click recheck or alter it during the demo. |
+| Groq milestone/scope assistance | Implemented; historical local results exist | Hosted inference and suggestion edit/save/reload on the final candidate remain unverified. |
+| PayPal Sandbox invoice create/send | One historical fictional invoice is recorded SENT | No payment, signed webhook delivery, or authoritative reconciliation is verified. Never call it PAID. |
+| Cloudflare webhook processing | Code and isolated CI coverage exist | Staging webhook path has a known HTTP 400 issue; not ready to demonstrate as working. |
+| Public Staging app | Owner confirms both services use 23194d8 and login/dashboard/existing projects work | Broader marketplace/provider workflow remains unverified; Render Free can sleep. |
 
-## Safe 3-minute demo path
+## Short, accurate demo path
 
-1. Show the landing page and the client/freelancer marketplace surfaces using existing fictional accounts.
-2. Open the pre-existing shared project; show its accepted terms, milestones, and persisted evidence/review history without editing.
-3. Present the previously captured Groq output as a historical/local draft result; show the human-review boundary. Do not make a new hosted inference request.
-4. Show the historical invoice's SENT state read-only as its own record; do not link it to the USD 100 project without confirming that relationship. State explicitly that no payment or webhook reconciliation is verified.
-5. Close with the isolated test evidence and the hosted limitations above.
+Use [DEMO_SCRIPT.md](DEMO_SCRIPT.md), under three minutes:
 
-Follow [DEMO_SCRIPT.md](DEMO_SCRIPT.md). If the existing records or target deployment do not match, stop that demo segment; never fabricate or alter records to fit the script.
+1. Landing page; show the client/freelancer marketplace surfaces using existing fictional accounts.
+2. Open the existing USD 100 project: accepted agreement, $40/$60 milestones, and current In Progress state. Use only safe, non-identifying content. Do not mutate it.
+3. If available, show an existing evidence/review record read-only; skip if the current view or account does not show it.
+4. Present the prior Groq output only as historical/local evidence, not as a hosted result. The current Scope Intelligence sample notice explicitly labels sample content; do not pass it off as AI.
+5. If the separate historical USD 600 invoice is available in an authorized account, show its state read-only as SENT. Do not tie it to the $100 project unless its linkage is verified. Do not recreate, resend, pay, or claim it paid.
+6. Close by disclosing that payment reconciliation/webhook delivery is unverified and the Cloudflare path currently fails with HTTP 400.
 
-## Before publishing the submission
+Do not create new users/jobs/proposals/projects, approve/reject milestones, invoke Groq, send invoices, or perform payments for this prepared demo without separate authorization. If a record is unavailable, skip that segment; never fabricate it.
 
-- [x] Owner confirmed both Render services deploy commit 23194d8. Public status responses do not expose the frontend API target; the owner-confirmed login/dashboard/projects smoke is the hosted evidence for this checkpoint.
-- [x] Owner confirmed login, dashboard, and existing projects work on commit 23194d8. Broader marketplace and provider workflows remain unchecked above.
-- [ ] Decide whether to submit with webhook/payment reconciliation explicitly deferred; do not imply payment completion.
-- [ ] Video production is deferred as requested. When resumed, record with fictional data only and hide addresses, credentials, tokens, and buyer details.
-- [ ] Confirm all Devpost statements and sponsor evidence match the [README](../README.md), [Devpost draft](DEVPOST_DRAFT.md), and [APIMatic evidence](APIMATIC_INTEGRATION.md).
-- [ ] Submit only after the owner explicitly chooses to publish.
+## Devpost links to use after publication
+
+- Demo: https://proofpay-staging-web.onrender.com
+- Source/setup: https://github.com/distinctikechukwu-stack/ProofPayAI/tree/codex/proofpay-final-integration-prep
+- CI: https://github.com/distinctikechukwu-stack/ProofPayAI/actions/runs/43056263683
+- Video: **must be added after a public YouTube upload** (currently absent).
+- Submission copy: [DEVPOST_DRAFT.md](DEVPOST_DRAFT.md)
+
+See the official [hackathon rules](https://paypalaihackathon.devpost.com/rules) and [schedule](https://paypalaihackathon.devpost.com/details/dates). The entry is not ready to submit until the video and license/ownership items are complete and the live form is submitted.

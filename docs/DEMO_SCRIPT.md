@@ -1,32 +1,58 @@
-# ProofPay AI demo script
+# ProofPay AI — evidence-aligned demo script
 
-**Run time:** about 2 minutes 20 seconds  
-**Script status:** matches the current local preview. The signed-out workspace uses illustrative data; no provider or database action occurs in this recording.
+**Target run time:** 3 minutes
+**Mode:** Existing fictional Staging accounts and records only. No new records, AI requests, invoices, sends, payments, or webhook actions are part of this prepared script.
 
-## 0:00–0:20 — Set the problem
+## Before recording
 
-“Freelancers and clients often disagree about what was included, what changed, and when approved work can be invoiced. ProofPay keeps scope, milestone decisions, and payment status visible in one shared workspace.”
+- The owner confirms both Render Staging services use commit 23194d8 and hosted login, dashboard, and existing projects work. Before recording, visually confirm these remain true.
+- Sign in only with the existing authorized fictional client and freelancer accounts. Keep passwords, recovery details, access tokens, private emails, and buyer information off-screen.
+- Choose the existing project with an accepted agreement and the approved USD 40 / USD 60 milestones. Confirm its current status before narrating it. Do not edit it.
+- The historical USD 600 Sandbox invoice was sent once and is recorded as SENT. Open it read-only if it remains available. Do not recreate or resend it. Do not associate it with the USD 100 project unless its project linkage is independently confirmed.
+- The owner-confirmed hosted pass covers login, dashboard, and existing projects only. Do not imply full marketplace, hosted Groq, or webhook/payment acceptance from that limited check.
 
-Show the landing page. Point out that scope evidence and approval controls are part of the product preview.
+## 0:00–0:20 — The problem
 
-## 0:20–0:50 — Walk through the sample project
+**Show:** ProofPay AI landing page.
 
-Choose **Open demo**. Say: “This is labeled sample data, not a connected client account.” Show the `$600` Studio website refresh and its `$150`, `$250`, and `$200` milestones. Open the project and point out its agreement, milestone progress, and review surfaces.
+**Say:** “Freelance work depends on shared expectations. ProofPay keeps the profile, project terms, evidence, review decisions, and invoice state together, so a sent invoice is never mistaken for verified payment.”
 
-## 0:50–1:25 — Explain the scope-review workflow
+## 0:20–0:55 — Marketplace and the two roles
 
-Open **Scope review**. Show the appointment-booking request and the exact sample agreement excerpt that excludes scheduling. Say: “The sample illustrates how evidence is shown next to a request. AI is not configured in this preview, so this classification is illustrative; it is not a live model result.”
+**Show:** Existing freelancer profile/service listing and client opportunities or an existing job/proposal. Switch to the second authorized account in a separate browser profile if the project context is not available in one session.
 
-Explain that the implemented API validates model output and citations, and that a human-priced change order requires both parties' approval before accepted scope changes.
+**Say:** “Clients can discover services and projects; freelancers can present a profile and respond. The same project is then visible to its authorized participants.”
 
-## 1:25–2:00 — Explain payment controls
+**Do not:** Create a new job, proposal, service, or account during this prepared read-only demo.
 
-Open **Invoices**. Show the notice that no invoice, provider link, or payment record exists in the signed-out preview. Explain the separate draft-creation and send confirmations, durable server-side claims, and reconciliation path. Say: “The code targets PayPal Sandbox only. No live Sandbox request or transaction has been performed in this environment.”
+## 0:55–1:40 — Agreement, milestones, and evidence
 
-## 2:00–2:20 — Close with what is next
+**Show:** Existing shared project, accepted agreement, milestone amounts/statuses, and the existing submission/review history. If available, show the submitted evidence link and freelancer summary on the client side, then the client's revision feedback on the freelancer side.
 
-“The next validation step is to apply the migrations to a test Supabase project, configure provider credentials, and run the full Sandbox webhook lifecycle. Job, proposal, messaging, hourly-work, moderation, and account-request code paths have local fake-backed tests, but their database behavior is not verified here. Account retention/deletion policy, deployed monitoring, and hosting remain in progress.”
+**Say:** “The agreement and milestone review are shared workflow state. Evidence and revision notes stay attached to the project, and the client and freelancer see the same persisted history after refresh.”
 
-## Optional configured-environment substitution
+**Do not:** Approve, reject, resubmit, or change a milestone during this recording. Only describe the two $40/$60 approvals if they are still visible in the selected fixture.
 
-Only after the environment is actually configured and verified, replace the illustrative scope section with a real authenticated request and verified AI result. Replace the invoice section only after demonstrating a real Sandbox invoice and provider-authoritative state update. Do not narrate an expected result as if it happened, and do not expose credentials or access tokens on screen.
+## 1:40–2:15 — AI assistance with a human decision
+
+**Show:** A previously captured, sanitized Groq result or its test evidence. The recorded local run generated ten milestones totaling 60,000 cents using openai/gpt-oss-20b; suggestions remained drafts for human review.
+
+**Say:** “The AI proposes structured milestones; a person edits and chooses what to save. Generation alone does not accept an agreement or approve work.”
+
+**Do not:** Make a new hosted Groq request during this recording unless it has separate authorization. Do not describe the historical local response as a result from the currently deployed Staging service.
+
+## 2:15–2:45 — PayPal Sandbox invoice state
+
+**Show:** The existing invoice's read-only state, if available.
+
+**Say:** “This fictional Sandbox invoice was created and sent once. Its verified recorded status is SENT. SENT is not PAID. The application is designed to accept payment state only from trusted provider data.”
+
+**Do not:** Recreate or resend the invoice, make a payment, register a webhook, or change payment state. The Cloudflare webhook path is currently known to fail in Staging, and payment reconciliation is not verified.
+
+## 2:45–3:00 — Close
+
+**Say:** “ProofPay AI makes project decisions easier to audit. Our isolated automated suite validates the payment and concurrency safeguards; hosted payment reconciliation remains a clearly identified next step.”
+
+## If the expected records or feature are unavailable
+
+Stop that part of the recording. Do not fabricate, seed, or mutate records to keep the script moving. Show the corresponding local test or design evidence and label it as local/automated evidence.
